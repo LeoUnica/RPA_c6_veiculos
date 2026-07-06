@@ -9,10 +9,28 @@ salvas no SharePoint/OneDrive.
 | Módulo | Status |
 |---|---|
 | `config.py` | ✅ Pronto - define as 4 bases e as regras de cada uma |
-| `data_processor.py` | ✅ Lógica de negócio pronta (remover colunas, filtrar status, remover mês atual, concatenar) |
+| `data_processor.py` | ✅ Pronto - filtra status, **alinha colunas automaticamente com a base original** (substitui o passo manual "comparar via PROCX"), remove mês atual e concatena |
 | `looker_automation.py` | ⚠️ Esqueleto - os seletores do Playwright são genéricos e **precisam ser ajustados** olhando o Looker de vocês (ver abaixo) |
 | `sharepoint_sync.py` | ⚠️ Esqueleto - precisa do App Registration no Azure AD (ver abaixo) |
 | `main.py` | ✅ Pronto - orquestra tudo e já tem logging em arquivo |
+
+### O que mudou nesta rodada
+
+- **Alinhamento automático de colunas**: em vez de manter listas fixas de
+  colunas a remover, `data_processor.py` agora compara o arquivo baixado com
+  a base original e mantém só as colunas que já existem nela (na mesma
+  ordem). Isso é exatamente o que o material da equipe descreve como
+  "comparar via PROCX" para a base **Dias sem Produção**, só que automático
+  e válido para todas as bases em modo de merge. Se uma coluna esperada não
+  vier no arquivo baixado, um aviso é logado em vez de quebrar silenciosamente.
+- **Correção de bug no upload ao SharePoint**: `sharepoint_sync.upload_processed_base`
+  estava subindo o arquivo com o nome do staging local (`{id}_original.xlsx`)
+  em vez do nome real da base (`{nome da base}.xlsx`), o que criaria um
+  arquivo novo em vez de sobrescrever o existente. Corrigido.
+- **Carteira e Parceiros vira cópia direta**: conforme a instrução "cole o
+  arquivo Analítico na pasta e renomeie com o nome do já existente", essa
+  base agora pula o pandas por completo e sobe o arquivo baixado como
+  bytes crus, sem risco de alterar formatação/valores.
 
 ## Passo 1 - Instalar dependências
 
@@ -42,9 +60,14 @@ Como não tenho acesso ao Looker de vocês, os seletores em
 Dica: o Playwright tem um "Inspector" que grava suas ações e gera o código
 do seletor automaticamente:
 ```bash
-playwright codegen https://seu-dominio.looker.com
+playwright codegen https://c6.dtcamp.com.br/WebAutomator/
 ```
 Isso é a forma mais rápida de acertar os seletores sem tentativa e erro.
+
+> O portal real é o **WebAutomator da C6** (`c6.dtcamp.com.br/WebAutomator`),
+> chamado de "Looker" apenas como apelido interno da equipe no material.
+> A URL de sessão (`?PSession=...`) é gerada dinamicamente após o login,
+> então não deve ser fixada em `LOOKER_URL` - use só a raiz do portal.
 
 ## Passo 4 - Configurar acesso ao SharePoint
 
