@@ -1,111 +1,105 @@
 # RPA - Bases C6 Veículos
 
-Automação do fluxo manual descrito no material da equipe de análise de dados:
-baixar 4 relatórios do Looker, tratar e consolidar nas bases originais
-salvas no SharePoint/OneDrive.
+## 📌 Objetivo
 
-## O que já está pronto vs. o que falta ajustar
+Automatizar o processo manual de atualização das bases de dados utilizadas
+pela equipe de análise de dados do time de Veículos (C6).
 
-| Módulo | Status |
-|---|---|
-| `config.py` | ✅ Pronto - define as 4 bases e as regras de cada uma |
-| `data_processor.py` | ✅ Pronto - filtra status, **alinha colunas automaticamente com a base original** (substitui o passo manual "comparar via PROCX"), remove mês atual e concatena |
-| `looker_automation.py` | ⚠️ Esqueleto - os seletores do Playwright são genéricos e **precisam ser ajustados** olhando o Looker de vocês (ver abaixo) |
-| `sharepoint_sync.py` | ⚠️ Esqueleto - precisa do App Registration no Azure AD (ver abaixo) |
-| `main.py` | ✅ Pronto - orquestra tudo e já tem logging em arquivo |
+Hoje, esse processo é feito manualmente: uma pessoa entra no Looker, navega
+até o relatório certo, aplica um filtro, baixa o Excel, limpa colunas
+desnecessárias, remove os dados do mês atual da planilha "original" (para
+evitar duplicidade) e cola os dados novos por cima — repetindo isso para 4
+bases diferentes, algumas diariamente e outras semanalmente.
 
-### O que mudou nesta rodada
+Este projeto automatiza esse fluxo por completo:
 
-- **Alinhamento automático de colunas**: em vez de manter listas fixas de
-  colunas a remover, `data_processor.py` agora compara o arquivo baixado com
-  a base original e mantém só as colunas que já existem nela (na mesma
-  ordem). Isso é exatamente o que o material da equipe descreve como
-  "comparar via PROCX" para a base **Dias sem Produção**, só que automático
-  e válido para todas as bases em modo de merge. Se uma coluna esperada não
-  vier no arquivo baixado, um aviso é logado em vez de quebrar silenciosamente.
-- **Correção de bug no upload ao SharePoint**: `sharepoint_sync.upload_processed_base`
-  estava subindo o arquivo com o nome do staging local (`{id}_original.xlsx`)
-  em vez do nome real da base (`{nome da base}.xlsx`), o que criaria um
-  arquivo novo em vez de sobrescrever o existente. Corrigido.
-- **Carteira e Parceiros vira cópia direta**: conforme a instrução "cole o
-  arquivo Analítico na pasta e renomeie com o nome do já existente", essa
-  base agora pula o pandas por completo e sobe o arquivo baixado como
-  bytes crus, sem risco de alterar formatação/valores.
+1. Login e navegação automática no Looker
+2. Aplicação do filtro correto (mês atual / ano atual)
+3. Download do relatório em Excel
+4. Limpeza dos dados (remoção de colunas, filtro de status)
+5. Atualização da base original (remove mês atual duplicado + concatena os
+   dados novos)
+6. Upload do resultado final de volta para o SharePoint/OneDrive
 
-## Passo 1 - Instalar dependências
+## 🗂️ Estrutura do Projeto
+
+```
+rpa_c6_veiculos/
+├── config.py              # Definição das 4 bases: caminho no Looker, filtro,
+│                           # pasta de destino, frequência e regras de negócio
+├── looker_automation.py   # Automação de login, navegação e download no Looker (Playwright)
+├── data_processor.py      # Limpeza, filtro e merge dos dados (pandas)
+├── sharepoint_sync.py     # Download/upload dos arquivos no SharePoint (Office365-REST-Python-Client)
+├── main.py                # Orquestrador: roda uma base específica, todas, ou por frequência
+├── requirements.txt       # Dependências do projeto
+├── .env.example           # Modelo de variáveis de ambiente (credenciais)
+├── downloads/             # Pasta de trabalho: arquivos baixados do Looker (gerada em runtime)
+├── staging/               # Pasta de trabalho: bases originais durante o processamento (gerada em runtime)
+└── logs/                  # Logs de execução (gerada em runtime)
+```
+
+### Fluxo entre os módulos
+
+```
+main.py
+  ├──> sharepoint_sync.py   (baixa a base original atual)
+  ├──> looker_automation.py (baixa o relatório novo do Looker)
+  ├──> data_processor.py    (limpa e mescla os dados)
+  └──> sharepoint_sync.py   (sobe o resultado final)
+```
+
+## 🛠️ Linguagens e Ferramentas Utilizadas
+
+| Categoria | Tecnologia | Uso no projeto |
+|---|---|---|
+| Linguagem | **Python 3.11+** | Linguagem principal de todo o projeto |
+| Automação de navegador (RPA) | **Playwright** | Login, navegação por menus e download dos relatórios no Looker |
+| Tratamento de dados | **pandas** | Limpeza de colunas, filtros e merge das planilhas |
+| Leitura/escrita de Excel | **openpyxl** | Suporte ao pandas para arquivos `.xlsx` |
+| Integração com SharePoint | **Office365-REST-Python-Client** | Download/upload de arquivos nas pastas do SharePoint/OneDrive |
+| Autenticação SharePoint | **Azure AD App Registration** | Client ID / Client Secret / Tenant ID para acesso via API |
+| Configuração de ambiente | **python-dotenv** | Carrega credenciais do arquivo `.env` sem expor no código |
+| Agendamento | **Windows Task Scheduler** (ou `cron` em Linux) | Executa `main.py` automaticamente nos horários definidos |
+| Logging | **módulo `logging`** (nativo do Python) | Registro de execução e falhas em `logs/rpa.log` |
+
+## ▶️ Como Rodar
 
 ```bash
+# 1. Criar e ativar ambiente virtual
+python -m venv venv
+venv\Scripts\activate          # Windows
+source venv/bin/activate       # Mac/Linux
+
+# 2. Instalar dependências
 pip install -r requirements.txt
 playwright install chromium
-```
 
-## Passo 2 - Configurar credenciais
+# 3. Configurar credenciais
+copy .env.example .env         # preencher com dados reais
 
-Copie `.env.example` para `.env` e preencha com os dados reais. Use
-`python-dotenv` ou exporte as variáveis no ambiente antes de rodar.
-
-## Passo 3 - Ajustar os seletores do Looker (a parte mais manual)
-
-Como não tenho acesso ao Looker de vocês, os seletores em
-`looker_automation.py` são um ponto de partida. Para ajustar:
-
-1. Rode em modo visível para comparar com o site real:
-   ```bash
-   python looker_automation.py --base numero_contratos --debug
-   ```
-2. Abra o DevTools do navegador (F12) na página do Looker e veja o texto/role
-   real de cada botão de menu, filtro e botão de download.
-3. Substitua os `# TODO` em `looker_automation.py` pelos seletores reais.
-
-Dica: o Playwright tem um "Inspector" que grava suas ações e gera o código
-do seletor automaticamente:
-```bash
-playwright codegen https://c6.dtcamp.com.br/WebAutomator/
-```
-Isso é a forma mais rápida de acertar os seletores sem tentativa e erro.
-
-> O portal real é o **WebAutomator da C6** (`c6.dtcamp.com.br/WebAutomator`),
-> chamado de "Looker" apenas como apelido interno da equipe no material.
-> A URL de sessão (`?PSession=...`) é gerada dinamicamente após o login,
-> então não deve ser fixada em `LOOKER_URL` - use só a raiz do portal.
-
-## Passo 4 - Configurar acesso ao SharePoint
-
-Você vai precisar de um **App Registration** no Azure AD:
-
-1. Portal Azure → Azure Active Directory → App registrations → New registration.
-2. Anote o **Application (client) ID** e o **Directory (tenant) ID**.
-3. Em "Certificates & secrets", crie um Client Secret e anote o valor.
-4. Em "API permissions", adicione permissão de aplicativo
-   `Sites.ReadWrite.All` (SharePoint) e conceda consentimento do admin.
-5. Preencha essas informações no `.env`.
-
-## Passo 5 - Confirmar nomes de colunas
-
-Em `data_processor.py`, a constante `DATE_COLUMN_BY_BASE` e o filtro de
-`STATUS PROPOSTA` assumem nomes de coluna que precisam ser confirmados
-abrindo um dos Excels baixados manualmente hoje.
-
-## Passo 6 - Testar uma base isolada antes de tudo
-
-```bash
+# 4. Testar uma base isolada
 python main.py --base numero_contratos
+
+# 5. Rodar todas as bases de uma frequência (uso em agendamento)
+python main.py --frequencia diaria
+python main.py --frequencia semanal
 ```
 
-Verifique o arquivo gerado em `staging/numero_contratos_original.xlsx`
-antes de rodar as outras bases ou de agendar.
+## 📋 Bases Automatizadas
 
-## Passo 7 - Agendar
+| Base | Frequência | Filtro |
+|---|---|---|
+| Meta Financiamento e Seguro | Semanal | Este mês |
+| Número de Contratos | Diária | Este mês |
+| Dias sem Produção | Semanal (segundas) | Este mês |
+| Carteira e Parceiros | Diária | Este ano |
 
-Depois de validado, agende via:
-- **Windows Task Scheduler**: rodar `python main.py --frequencia diaria`
-  todo dia, e `python main.py --frequencia semanal` (ou `semanal_segunda`)
-  toda segunda-feira.
-- Ou um servidor Linux com `cron`.
+## ⚠️ Status Atual
 
-## Observação sobre a base "Dias sem Produção"
+- ✅ Lógica de tratamento de dados (`data_processor.py`) implementada e testada
+- ⚠️ Seletores do Playwright em `looker_automation.py` são um esqueleto —
+  precisam ser ajustados com `playwright codegen` olhando o Looker real
+- ⚠️ Integração com SharePoint requer configuração de App Registration no
+  Azure AD antes do primeiro uso
 
-O material menciona que a comparação de colunas é feita "via PROCX" contra
-a base original. Isso foi modelado aqui como remoção de colunas fixas em
-`config.py` (`remover_colunas`) - depois de identificar quais colunas batem
-via PROCX manualmente uma vez, é só listar as que sobram/faltam ali.
+Veja detalhes de configuração passo a passo no arquivo de setup do projeto.
