@@ -102,4 +102,3 @@ python main.py --frequencia semanal
 - ⚠️ Integração com SharePoint requer configuração de App Registration no
   Azure AD antes do primeiro uso
 
-Veja detalhes de configuração passo a passo no arquivo de setup do projeto.
