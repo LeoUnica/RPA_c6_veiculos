@@ -25,7 +25,7 @@ for d in (DOWNLOAD_DIR, STAGING_DIR, LOG_DIR):
 # --------------------------------------------------------------------------
 # Credenciais / URLs (via variáveis de ambiente - ver .env.example)
 # --------------------------------------------------------------------------
-LOOKER_URL = os.getenv("LOOKER_URL", "https://c6.dtcamp.com.br/WebAutomator/")
+LOOKER_URL = os.getenv("LOOKER_URL", "https://c6.c6consig.com.br/WebAutorizador/Login/AC.UI.LOGIN.aspx")
 LOOKER_USER = os.getenv("LOOKER_USER")
 LOOKER_PASSWORD = os.getenv("LOOKER_PASSWORD")
 
@@ -65,15 +65,41 @@ BASES = [
     {
         "id": "numero_contratos",
         "nome": "Número de Contratos",
-        "looker_path": ["Auto", "Acompanhamento Veículos", "Analítico"],
+        # Caminho de menu até abrir o painel "Auto" (Relatórios > Relatórios
+        # Gerenciais > Auto). A partir daí, o card "Acompanhamento" e o botão
+        # "Analítico" são tratados à parte em looker_automation.py, pois o
+        # fluxo dessa base tem passos próprios (filtros, update, download
+        # avançado) que não se aplicam às outras bases.
+        "looker_path": ["Relatórios", "Relatórios Gerenciais", "Auto"],
+        "card_acompanhamento": "Acompanhamento Veículos",  # dentro do card "Acompanhamento"
+        "aba_relatorio": "Analítico",
         "filtro_valor": "este_mes",
         "bloco": None,
+        # Filtros aplicados no painel lateral direito, específicos dessa base
+        "filtros": {
+            "tipo_exibicao": "Valor",              # manter somente "Valor" em Tipo Exibição
+            "periodo_dt_relatorio": "Last 30 Days",  # Dt Relatorio Date -> Last 30 Days
+        },
         "pasta_sharepoint": "Número de Contratos",
         "frequencia": "diaria",
         "regras": {
+            # Colunas a manter na planilha "Analítico" baixada - o restante é excluído.
+            "colunas_manter": [
+                "ID Proposta",
+                "Dt Relatório",
+                "Lojista",
+                "GP",
+                "Status Proposta",
+                "Cd Contrato",
+                "Vl Principal",
+                "Vl Financiamento",
+                "(R$) Seguro Prestamista",
+                "Filial",
+            ],
             "remover_colunas": [],
-            "filtro_status_proposta": "PROPOSTA PAGA",   # filtrar coluna STATUS PROPOSTA
+            "filtro_status_proposta": "PROPOSTA PAGA",   # filtrar coluna Status Proposta
             "remover_mes_atual_antes_de_colar": True,
+            "aplicar_autofiltro_excel": True,
         },
     },
     {

@@ -20,6 +20,7 @@ from datetime import date
 from pathlib import Path
 
 import pandas as pd
+from openpyxl import load_workbook
 
 import config
 
@@ -28,7 +29,7 @@ logger = logging.getLogger("data_processor")
 # TODO: confirmar o nome exato da coluna de data em cada base
 DATE_COLUMN_BY_BASE = {
     "meta_financiamento_seguro": "Data",
-    "numero_contratos": "Data Proposta",
+    "numero_contratos": "Dt Relatório",
     "dias_sem_producao": "Data",
     "carteira_parceiros": None,  # essa base é substituição total, não usa data
 }
@@ -72,13 +73,40 @@ def _align_columns_with_original(df_novo: pd.DataFrame, df_original: pd.DataFram
     return df_novo[colunas_finais]
 
 
+def _select_columns(df_novo: pd.DataFrame, df_original: pd.DataFrame | None, base: dict) -> pd.DataFrame:
+    """
+    Define quais colunas vão para a planilha final.
+
+    Se a base tiver uma lista explícita `colunas_manter` em config.py (ex:
+    numero_contratos), essa lista é a fonte da verdade e é aplicada
+    diretamente - as demais colunas do arquivo baixado são descartadas.
+    Caso contrário, cai no alinhamento automático com a base original.
+    """
+    colunas_manter = base["regras"].get("colunas_manter")
+    if colunas_manter:
+        faltando = [c for c in colunas_manter if c not in df_novo.columns]
+        if faltando:
+            logger.warning("Colunas esperadas não encontradas no arquivo baixado: %s", faltando)
+        colunas_presentes = [c for c in colunas_manter if c in df_novo.columns]
+        return df_novo[colunas_presentes]
+
+    return _align_columns_with_original(df_novo, df_original, base)
+
+
 def _apply_row_filters(df: pd.DataFrame, base: dict) -> pd.DataFrame:
-    """Aplica filtros de linha (ex: STATUS PROPOSTA) antes de qualquer corte de coluna."""
+    """Aplica filtros de linha (ex: Status Proposta) antes de qualquer corte de coluna."""
     status_filtro = base["regras"].get("filtro_status_proposta")
     if status_filtro:
-        # TODO: confirmar o nome exato da coluna ("STATUS PROPOSTA")
-        df = df[df["STATUS PROPOSTA"] == status_filtro]
+        df = df[df["Status Proposta"] == status_filtro]
     return df
+
+
+def _apply_excel_autofilter(path: Path):
+    """Adiciona o filtro (AutoFilter) do Excel em todas as colunas da planilha final."""
+    wb = load_workbook(path)
+    ws = wb.active
+    ws.auto_filter.ref = ws.dimensions
+    wb.save(path)
 
 
 def merge_into_original(df_novo: pd.DataFrame, original_path: Path, base: dict) -> pd.DataFrame:
@@ -91,10 +119,10 @@ def merge_into_original(df_novo: pd.DataFrame, original_path: Path, base: dict) 
 
     if not original_path.exists():
         logger.info("Base original não existe ainda, criando: %s", original_path)
-        return _align_columns_with_original(df_novo, None, base)
+        return _select_columns(df_novo, None, base)
 
     df_original = pd.read_excel(original_path)
-    df_novo = _align_columns_with_original(df_novo, df_original, base)
+    df_novo = _select_columns(df_novo, df_original, base)
 
     if base["regras"].get("remover_mes_atual_antes_de_colar") and date_col and date_col in df_original.columns:
         mask_mes_atual = _current_month_mask(df_original, date_col)
@@ -128,5 +156,9 @@ def process_base(downloaded_path: Path, base: dict) -> Path:
     df_final = merge_into_original(df_novo, original_path, base)
 
     df_final.to_excel(original_path, index=False)
+
+    if base["regras"].get("aplicar_autofiltro_excel"):
+        _apply_excel_autofilter(original_path)
+
     logger.info("Base '%s' atualizada: %s (%d linhas)", base["nome"], original_path, len(df_final))
     return original_path
