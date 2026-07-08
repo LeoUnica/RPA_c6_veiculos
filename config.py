@@ -11,6 +11,10 @@ lista - nenhum outro arquivo precisa ser alterado.
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 # --------------------------------------------------------------------------
 # Pastas locais de trabalho (staging antes de subir pro SharePoint)
 # --------------------------------------------------------------------------

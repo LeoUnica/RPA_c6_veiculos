@@ -39,11 +39,23 @@ ICON_MORE_VERT_PATH = (
 
 
 def login(page: Page):
+    """
+    Login no portal C6 Consig (WebAutorizador - página ASP.NET clássica,
+    sem <label>). Seletores confirmados inspecionando o HTML real da página:
+      - Usuário: input#EUsuario_CAMPO
+      - Senha:   input#ESenha_CAMPO
+      - Entrar:  <a id="lnkEntrar"> (link com postback, não é um <button>)
+
+    O portal costuma mostrar um confirm() JS ("Usuário já autenticado em
+    outra estação. Deseja desconectar-se...") quando já existe uma sessão
+    ativa - aceitamos automaticamente para forçar a nova sessão.
+    """
+    page.on("dialog", lambda dialog: dialog.accept())
+
     page.goto(config.LOOKER_URL)
-    # TODO: ajustar para o fluxo real de login (SSO, usuário/senha, etc.)
-    page.get_by_label("Usuário").fill(config.LOOKER_USER)
-    page.get_by_label("Senha").fill(config.LOOKER_PASSWORD)
-    page.get_by_role("button", name="Entrar").click()
+    page.locator("#EUsuario_CAMPO").fill(config.LOOKER_USER)
+    page.locator("#ESenha_CAMPO").fill(config.LOOKER_PASSWORD)
+    page.locator("#lnkEntrar").click()
     page.wait_for_load_state("networkidle")
 
 
