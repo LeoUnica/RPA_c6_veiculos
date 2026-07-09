@@ -137,7 +137,6 @@ BASES = [
             ],
             "remover_colunas": [],
             "filtro_status_proposta": "PROPOSTA PAGA",   # filtrar coluna Status Proposta
-            "remover_mes_atual_antes_de_colar": True,
             "aplicar_autofiltro_excel": True,
         },
     },
