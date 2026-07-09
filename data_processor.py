@@ -166,11 +166,19 @@ def _process_numero_contratos(downloaded_path: Path, base: dict) -> Path:
          sair da janela) - a deduplicação é por "ID Proposta", mantendo
          sempre a versão mais recente baixada.
       3. Copia para a planilha de origem oficial do ano correspondente
-         apenas os contratos que ainda não estão lá, inseridos ao final em
-         ordem crescente de data, preservando o histórico.
+         apenas os contratos que ainda não estão lá, preservando o histórico.
+
+    Em ambas as planilhas, o resultado final fica ordenado por data
+    crescente (do menor para o maior dia de cada mês, mês a mês) - não só
+    o bloco novo, a tabela inteira é reordenada por data a cada execução.
     """
     chave = CHAVE_UNICA_NUMERO_CONTRATOS
     date_col = DATE_COLUMN_BY_BASE.get(base["id"])
+
+    def _ordenar_por_data(df: pd.DataFrame) -> pd.DataFrame:
+        if date_col and date_col in df.columns:
+            return df.sort_values(by=date_col, ascending=True, kind="stable").reset_index(drop=True)
+        return df
 
     df_tratado = pd.read_excel(downloaded_path)
     df_tratado = _apply_row_filters(df_tratado, base)
@@ -183,6 +191,7 @@ def _process_numero_contratos(downloaded_path: Path, base: dict) -> Path:
     df_previa_existente = pd.read_excel(previa_path) if previa_path.exists() else pd.DataFrame(columns=df_tratado.columns)
     df_previa = pd.concat([df_previa_existente, df_tratado], ignore_index=True)
     df_previa = df_previa.drop_duplicates(subset=chave, keep="last")
+    df_previa = _ordenar_por_data(df_previa)
 
     df_previa.to_excel(previa_path, index=False)
     if base["regras"].get("aplicar_autofiltro_excel"):
@@ -202,10 +211,8 @@ def _process_numero_contratos(downloaded_path: Path, base: dict) -> Path:
         df_origem = pd.DataFrame(columns=df_previa.columns)
         df_novos = df_previa
 
-    if date_col and date_col in df_novos.columns:
-        df_novos = df_novos.sort_values(by=date_col, ascending=True)
-
     df_final = pd.concat([df_origem, df_novos], ignore_index=True)
+    df_final = _ordenar_por_data(df_final)
     df_final.to_excel(origem_path, index=False)
     if base["regras"].get("aplicar_autofiltro_excel"):
         _apply_excel_autofilter(origem_path)
