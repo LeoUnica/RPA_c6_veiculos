@@ -16,7 +16,7 @@ relatório.
 """
 
 import logging
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -39,6 +39,25 @@ def _current_month_mask(df: pd.DataFrame, date_col: str) -> pd.Series:
     hoje = date.today()
     dt = pd.to_datetime(df[date_col], errors="coerce", dayfirst=True)
     return (dt.dt.month == hoje.month) & (dt.dt.year == hoje.year)
+
+
+def _current_month_mask_com_virada(df: pd.DataFrame, date_col: str, dias_extra: int = 3) -> pd.Series:
+    """
+    Igual a `_current_month_mask`, mas no primeiro dia do mês (virada)
+    também mantém os últimos `dias_extra` dias do mês anterior - alguns
+    contratos de fim de mês só aparecem como "PROPOSTA PAGA" com um pequeno
+    atraso. A partir do segundo dia do mês, volta a ser só o mês atual.
+    """
+    hoje = date.today()
+    mask = _current_month_mask(df, date_col)
+
+    if hoje.day == 1:
+        dt = pd.to_datetime(df[date_col], errors="coerce", dayfirst=True)
+        primeiro_dia_mes_atual = pd.Timestamp(hoje.year, hoje.month, 1)
+        limite_inferior = primeiro_dia_mes_atual - timedelta(days=dias_extra)
+        mask = mask | ((dt >= limite_inferior) & (dt < primeiro_dia_mes_atual))
+
+    return mask
 
 
 def _align_columns_with_original(df_novo: pd.DataFrame, df_original: pd.DataFrame | None, base: dict) -> pd.DataFrame:
@@ -163,6 +182,9 @@ def _process_numero_contratos(downloaded_path: Path, base: dict) -> Path:
       2. Descarta qualquer linha que não seja do mês atual - o relatório usa
          "Last 30 Days", então sempre traz um pedaço do mês anterior junto,
          que não deve entrar na Prévia nem ser considerado daqui pra frente.
+         Exceção: no primeiro dia do mês (virada), também mantém os últimos
+         3 dias do mês anterior, para não perder contratos de fim de mês
+         que só aparecem como "PROPOSTA PAGA" com um pequeno atraso.
       3. Acumula o resultado na planilha "Prévia" (só o mês atual), sem
          duplicar contratos já vistos em downloads anteriores do mesmo mês -
          a deduplicação é por "ID Proposta", mantendo sempre a versão mais
@@ -184,7 +206,7 @@ def _process_numero_contratos(downloaded_path: Path, base: dict) -> Path:
 
     def _apenas_mes_atual(df: pd.DataFrame) -> pd.DataFrame:
         if date_col and date_col in df.columns and not df.empty:
-            return df[_current_month_mask(df, date_col)]
+            return df[_current_month_mask_com_virada(df, date_col)]
         return df
 
     df_tratado = pd.read_excel(downloaded_path)
