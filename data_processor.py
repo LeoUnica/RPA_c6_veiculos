@@ -160,12 +160,14 @@ def _process_numero_contratos(downloaded_path: Path, base: dict) -> Path:
     """
     Fluxo específico da base "Número de Contratos":
       1. Filtra Status Proposta = PROPOSTA PAGA e seleciona as colunas certas.
-      2. Acumula o resultado na planilha "Prévia", sem duplicar contratos já
-         vistos em downloads anteriores (o relatório usa "Last 30 Days", ou
-         seja, o mesmo contrato aparece de novo em vários dias seguidos até
-         sair da janela) - a deduplicação é por "ID Proposta", mantendo
-         sempre a versão mais recente baixada.
-      3. Copia para a planilha de origem oficial do ano correspondente
+      2. Descarta qualquer linha que não seja do mês atual - o relatório usa
+         "Last 30 Days", então sempre traz um pedaço do mês anterior junto,
+         que não deve entrar na Prévia nem ser considerado daqui pra frente.
+      3. Acumula o resultado na planilha "Prévia" (só o mês atual), sem
+         duplicar contratos já vistos em downloads anteriores do mesmo mês -
+         a deduplicação é por "ID Proposta", mantendo sempre a versão mais
+         recente baixada.
+      4. Copia para a planilha de origem oficial do ano correspondente
          apenas os contratos que ainda não estão lá, preservando o histórico.
 
     Em ambas as planilhas, o resultado final fica ordenado por data
@@ -180,15 +182,23 @@ def _process_numero_contratos(downloaded_path: Path, base: dict) -> Path:
             return df.sort_values(by=date_col, ascending=True, kind="stable").reset_index(drop=True)
         return df
 
+    def _apenas_mes_atual(df: pd.DataFrame) -> pd.DataFrame:
+        if date_col and date_col in df.columns and not df.empty:
+            return df[_current_month_mask(df, date_col)]
+        return df
+
     df_tratado = pd.read_excel(downloaded_path)
     df_tratado = _apply_row_filters(df_tratado, base)
     df_tratado = _select_columns(df_tratado, None, base)
+    df_tratado = _apenas_mes_atual(df_tratado)
 
-    # --- 1. Acumula na "Prévia", sem duplicar por ID Proposta ---
+    # --- 1. Acumula na "Prévia" (só o mês atual), sem duplicar por ID Proposta ---
     previa_path = config.caminho_previa_numero_contratos()
     previa_path.parent.mkdir(parents=True, exist_ok=True)
 
     df_previa_existente = pd.read_excel(previa_path) if previa_path.exists() else pd.DataFrame(columns=df_tratado.columns)
+    df_previa_existente = _apenas_mes_atual(df_previa_existente)  # descarta sobra de mês anterior já acumulada
+
     df_previa = pd.concat([df_previa_existente, df_tratado], ignore_index=True)
     df_previa = df_previa.drop_duplicates(subset=chave, keep="last")
     df_previa = _ordenar_por_data(df_previa)
