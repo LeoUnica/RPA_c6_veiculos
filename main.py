@@ -32,12 +32,18 @@ logger = logging.getLogger("main")
 def run_base(base: dict):
     logger.info("=== Iniciando base: %s ===", base["nome"])
     try:
+        # A base "Número de Contratos" (modo "planilha_origem_local") não usa
+        # SharePoint: os dados vão direto para a planilha de origem local
+        # (ver data_processor._process_numero_contratos).
+        usa_sharepoint = base["regras"].get("modo") != "planilha_origem_local"
+
         # 1. Baixa a base original atual do SharePoint (para o merge ficar certo)
-        original_local = config.STAGING_DIR / f"{base['id']}_original.xlsx"
-        try:
-            sharepoint_sync.download_original_base(base, original_local)
-        except Exception:
-            logger.warning("Não foi possível baixar a base original (pode ser a primeira execução).")
+        if usa_sharepoint:
+            original_local = config.STAGING_DIR / f"{base['id']}_original.xlsx"
+            try:
+                sharepoint_sync.download_original_base(base, original_local)
+            except Exception:
+                logger.warning("Não foi possível baixar a base original (pode ser a primeira execução).")
 
         # 2. Baixa o relatório novo do Looker
         downloaded_path = looker_automation.download_base(base)
@@ -46,7 +52,8 @@ def run_base(base: dict):
         final_path = data_processor.process_base(downloaded_path, base)
 
         # 4. Sobe o resultado final para o SharePoint
-        sharepoint_sync.upload_processed_base(final_path, base)
+        if usa_sharepoint:
+            sharepoint_sync.upload_processed_base(final_path, base)
 
         logger.info("=== Base '%s' concluída com sucesso ===", base["nome"])
     except Exception:

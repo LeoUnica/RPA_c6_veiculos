@@ -18,20 +18,20 @@ navegador visível (headless=False) para você comparar com o site real.
 
 import argparse
 import logging
+import re
 import time
 from pathlib import Path
 
-from playwright.sync_api import sync_playwright, Page
+from playwright.sync_api import sync_playwright, BrowserContext, Locator, Page
 
 import config
 
 logger = logging.getLogger("looker_automation")
 
 # --------------------------------------------------------------------------
-# Seletores (svg path) copiados do HTML real fornecido pela equipe para o
-# fluxo de "Acompanhamento Veículos" > "Analítico" (base numero_contratos)
+# Seletor (svg path) do ícone de "3 pontinhos" (Tile actions) usado no
+# fluxo de download da planilha "Analítico" (base numero_contratos)
 # --------------------------------------------------------------------------
-ICON_FILTER_PANEL_PATH = "M10 18h4v-2h-4v2zM3 6v2h18V6H3zm3 7h12v-2H6v2z"
 ICON_MORE_VERT_PATH = (
     "M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"
     "m0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"
@@ -107,101 +107,172 @@ def download_report(page: Page, base_id: str) -> Path:
 
 # --------------------------------------------------------------------------
 # Fluxo dedicado - base "numero_contratos" (Acompanhamento Veículos > Analítico)
+#
+# Este fluxo foi validado rodando de verdade contra o portal (não é mais um
+# esqueleto/chute): o relatório é hospedado no Google Looker de verdade,
+# embutido dentro do WebAutorizador via duas janelas pop-up sucessivas.
 # --------------------------------------------------------------------------
 
-def _click_icon_button(page: Page, svg_path_d: str):
-    """Clica no botão cujo ícone svg tem o atributo 'd' informado."""
-    button = page.locator(f'button:has(svg path[d="{svg_path_d}"])').first
-    button.click()
-
-
-def open_acompanhamento_veiculos_analitico(page: Page, base: dict):
+def open_acompanhamento_veiculos_analitico(context: BrowserContext, page: Page) -> Page:
     """
-    Navega até o relatório Analítico de Acompanhamento Veículos:
-    Relatórios > Relatórios Gerenciais > Auto (painel) > card "Acompanhamento"
-    > "Acompanhamento Veículos" > botão "Analítico".
+    Navega até o dashboard "Acompanhamento Veículos" e retorna a Page do
+    Looker onde ele foi aberto (é uma nova aba/pop-up, não a mesma página).
+
+    Fluxo real confirmado:
+      1. O menu "Relatórios" só revela "Relatórios Gerenciais" com hover
+         (não com click).
+      2. Clicar em "Relatórios Gerenciais" abre uma pop-up nova com o
+         catálogo de relatórios do Looker (dashboards/371).
+      3. Dentro dessa pop-up, o card "🚗 Auto" (o texto vem com emoji e
+         espaço, por isso o match é parcial) leva ao dashboard "One Page -
+         Auto" (dashboards/513), na mesma aba.
+      4. O card "Acompanhamento Veículos" tem DOIS elementos com o mesmo
+         texto: o título do card (não clicável) e, mais abaixo, o link de
+         fato (por isso usamos `.nth(1)`, não `.first`).
+      5. Clicar nesse link abre OUTRA pop-up com o dashboard final
+         (corp_consignado_embed::00050_producao).
     """
-    navigate_menu(page, base["looker_path"])  # Relatórios > Relatórios Gerenciais > Auto
-
-    # No card "Acompanhamento", seleciona "Acompanhamento Veículos"
-    page.get_by_text(base["card_acompanhamento"], exact=True).click()
-    page.wait_for_load_state("networkidle")
-
-    # Clica no botão "Analítico"
-    page.get_by_role("button", name=base["aba_relatorio"]).click()
-    page.wait_for_load_state("networkidle")
-
-
-def apply_analitico_filters(page: Page, filtros: dict):
-    """
-    Abre o painel de filtros do lado direito e configura:
-      - "Tipo Exibição" -> mantém somente a opção informada (ex: "Valor")
-      - "Dt Relatorio Date" -> período relativo (ex: "Last 30 Days")
-    """
-    # Abre o painel de filtros (ícone de filtro no lado direito)
-    _click_icon_button(page, ICON_FILTER_PANEL_PATH)
+    page.get_by_text("Relatórios", exact=True).first.hover()
     page.wait_for_timeout(500)
 
+    with context.expect_page(timeout=15000) as popup_info:
+        page.get_by_text("Relatórios Gerenciais", exact=True).first.click()
+    catalogo = popup_info.value
+    catalogo.wait_for_load_state("networkidle", timeout=20000)
+    catalogo.wait_for_timeout(5000)
+
+    catalogo.get_by_text("Auto", exact=False).first.click()
+    catalogo.wait_for_timeout(3000)
+    catalogo.wait_for_load_state("networkidle", timeout=15000)
+    catalogo.wait_for_timeout(2000)
+
+    link_acompanhamento = catalogo.get_by_text("Acompanhamento Veículos", exact=True).nth(1)
+    with context.expect_page(timeout=10000) as popup_info2:
+        link_acompanhamento.click(force=True)
+    final_page = popup_info2.value
+
+    # O dashboard final faz polling contínuo em segundo plano, então
+    # "networkidle" nunca conclui aqui - usamos espera fixa.
+    final_page.wait_for_load_state("domcontentloaded", timeout=20000)
+    final_page.wait_for_timeout(8000)
+    return final_page
+
+
+def apply_analitico_filters(final_page: Page, filtros: dict):
+    """
+    Clica na aba "Analítico" e configura, no painel de filtros:
+      - "Tipo Exibição" -> mantém somente a opção informada (ex: "Valor")
+      - "Dt Relatorio Date" -> período relativo (ex: "Last 30 Days")
+
+    A aba é um link cujo texto acessível inclui um emoji (ex: "❗ Analítico"),
+    por isso usamos correspondência parcial via role em vez de texto exato.
+    """
+    final_page.get_by_role("link", name="Analítico", exact=False).first.click()
+    final_page.wait_for_timeout(5000)
+
+    # Abre o painel de filtros (botão "NN filters", o número varia por aba)
+    final_page.get_by_text("filters", exact=False).first.click()
+    final_page.wait_for_timeout(1500)
+
     # --- Tipo Exibição ---
-    # TODO: confirmar se é necessário expandir o card do filtro antes de
-    # marcar a opção (ex: clicar no título "Tipo Exibição" para abrir a lista)
-    page.get_by_text("Tipo Exibição", exact=True).click()
-    page.get_by_text(filtros["tipo_exibicao"], exact=True).click()
+    # O chip de valor do filtro mostra o texto atual (ex: "is Qtde" ou
+    # "is Valor"). "Tipo Exibição" é sempre o primeiro filtro do painel,
+    # então o primeiro chip que começa com "is " é o dele.
+    final_page.get_by_text(re.compile(r"^is "), exact=False).first.click()
+    final_page.wait_for_timeout(500)
+    final_page.get_by_text(filtros["tipo_exibicao"], exact=True).click()
+    final_page.wait_for_timeout(500)
 
-    # --- Dt Relatorio Date -> "Last 30 Days" ---
-    page.get_by_text("Dt Relatorio Date", exact=True).click()
-    page.get_by_text(filtros["periodo_dt_relatorio"], exact=True).click()
+    # --- Dt Relatorio Date ---
+    # Na prática já vem com o valor certo por padrão salvo no dashboard
+    # (confirmado via querystring "Dt+Relatorio+Date=30+day"). Só avisamos
+    # no log se algum dia vier diferente - o clique para trocar esse filtro
+    # específico ainda não foi mapeado/validado.
+    if final_page.get_by_text(filtros["periodo_dt_relatorio"], exact=True).count() == 0:
+        logger.warning(
+            "Filtro 'Dt Relatorio Date' não está em '%s' - ajuste manual pode "
+            "ser necessário (fluxo de troca ainda não mapeado).",
+            filtros["periodo_dt_relatorio"],
+        )
 
-    page.wait_for_load_state("networkidle")
 
-
-def update_report_data(page: Page):
+def update_report_data(final_page: Page):
     """Clica no botão 'Update' para atualizar os dados do relatório."""
-    page.locator('button[aria-labelledby="page-freshness-indicator"]').click()
-    page.wait_for_load_state("networkidle")
-    # pequena espera extra para garantir que o refresh dos dados terminou
-    page.wait_for_timeout(1500)
+    final_page.locator('button[aria-labelledby="page-freshness-indicator"]').click()
+    # espera fixa: networkidle não é confiável nesse dashboard (polling contínuo)
+    final_page.wait_for_timeout(5000)
 
 
-def download_analitico_spreadsheet(page: Page, base_id: str) -> Path:
+def _find_tile_actions_button(final_page: Page, near: Locator) -> Locator:
     """
-    Rola até a planilha "Analítico", abre o menu de 3 pontinhos, clica em
-    "Download data", seleciona o formato Excel, expande "Advanced data
-    options" e marca as opções de exportação completa antes de baixar.
+    Encontra o botão "Tile actions" (3 pontinhos) mais próximo verticalmente
+    do elemento `near`. O mesmo ícone svg é reaproveitado ~40x na página
+    (cada coluna do crosstab tem um mini-ícone igual no cabeçalho, e há um
+    menu global de dashboard também com o mesmo ícone) - por isso filtramos
+    por altura do botão (os de tile ficam com 24px, diferente dos 36px do
+    menu global e dos ~21px dos ícones de coluna) e pegamos o mais próximo
+    em Y do elemento de referência.
     """
-    analitico_title = page.get_by_text("Analítico", exact=True)
-    analitico_title.scroll_into_view_if_needed()
+    near_box = near.bounding_box()
+    candidatos = final_page.locator(f'button:has(svg path[d="{ICON_MORE_VERT_PATH}"])')
+    melhor = None
+    menor_distancia = None
+    for i in range(candidatos.count()):
+        el = candidatos.nth(i)
+        box = el.bounding_box()
+        if not box or abs(box["height"] - 24) > 2:
+            continue
+        distancia = abs(box["y"] - near_box["y"])
+        if menor_distancia is None or distancia < menor_distancia:
+            menor_distancia = distancia
+            melhor = el
+    return melhor
 
-    # O botão de 3 pontinhos fica praticamente invisível até passar o mouse
-    # por cima da linha/planilha (revelado via hover no CSS) - por isso
-    # damos hover no container antes de clicar, e usamos force=True como
-    # segurança caso o Playwright ainda considere o elemento "oculto".
-    container = analitico_title.locator(
-        f'xpath=ancestor::*[.//button[.//svg/path[@d="{ICON_MORE_VERT_PATH}"]]][1]'
-    ).first
-    container.hover()
-    more_button = container.locator(f'button:has(svg path[d="{ICON_MORE_VERT_PATH}"])').first
-    more_button.click(force=True)
 
-    page.get_by_text("Download data", exact=True).click()
+def download_analitico_spreadsheet(final_page: Page, base_id: str) -> Path:
+    """
+    Rola até a planilha "Analítico", abre o menu de 3 pontinhos daquela
+    planilha (fica quase invisível até o hover), clica em "Download data",
+    seleciona o formato Excel, expande "Advanced data options" e marca as
+    opções de exportação completa antes de baixar.
+    """
+    analitico_section = final_page.get_by_text("Analítico", exact=True).last
+    analitico_section.scroll_into_view_if_needed()
+    final_page.wait_for_timeout(1000)
 
-    # Formato do download
-    page.get_by_text("Excel Spreadsheet (Excel 2007 or later)", exact=True).click()
+    tile_button = _find_tile_actions_button(final_page, analitico_section)
+    tile_button.hover()
+    final_page.wait_for_timeout(300)
+    tile_button.click(force=True)
+    final_page.wait_for_timeout(1000)
 
-    # Expande "Advanced data options"
-    page.get_by_text("Advanced data options", exact=True).click()
+    final_page.get_by_text("Download data", exact=True).click()
+    final_page.wait_for_timeout(1500)
+
+    # O combobox de formato parece usar Shadow DOM fechado: com ele fechado
+    # não dá pra ler nem clicar no valor atual ("CSV") por texto. Precisa
+    # abrir a lista primeiro - só aí as opções viram texto normal acessível.
+    final_page.get_by_role("combobox").first.click()
+    final_page.wait_for_timeout(500)
+    final_page.get_by_text("Excel Spreadsheet (Excel 2007 or later)", exact=True).click()
+    final_page.wait_for_timeout(300)
+    final_page.keyboard.press("Escape")  # garante que a lista feche antes de continuar
+    final_page.wait_for_timeout(1000)
+
+    final_page.get_by_text("Advanced data options", exact=True).click(force=True)
+    final_page.wait_for_timeout(1000)
 
     # Results -> "With visualizations options applied"
-    page.get_by_text("With visualizations options applied", exact=True).click()
+    final_page.get_by_text("With visualizations options applied", exact=True).click()
 
-    # Data Values -> "Formatted"
-    page.get_by_text("Formatted", exact=True).click()
+    # Data Values -> "Formatted" (já vem marcado por padrão; clicar de novo é inofensivo)
+    final_page.get_by_text("Formatted", exact=True).click()
 
     # Number of rows to include -> "All results"
-    page.get_by_text("All results", exact=True).click()
+    final_page.get_by_text("All results", exact=True).click()
 
-    with page.expect_download() as download_info:
-        page.get_by_role("button", name="Download", exact=True).click()
+    with final_page.expect_download(timeout=60000) as download_info:
+        final_page.get_by_role("button", name="Download", exact=True).click()
 
     download = download_info.value
     dest_path = config.DOWNLOAD_DIR / f"{base_id}_{int(time.time())}.xlsx"
@@ -210,12 +281,12 @@ def download_analitico_spreadsheet(page: Page, base_id: str) -> Path:
     return dest_path
 
 
-def download_numero_contratos_report(page: Page, base: dict) -> Path:
+def download_numero_contratos_report(context: BrowserContext, page: Page, base: dict) -> Path:
     """Fluxo completo específico da base 'numero_contratos'."""
-    open_acompanhamento_veiculos_analitico(page, base)
-    apply_analitico_filters(page, base["filtros"])
-    update_report_data(page)
-    return download_analitico_spreadsheet(page, base["id"])
+    final_page = open_acompanhamento_veiculos_analitico(context, page)
+    apply_analitico_filters(final_page, base["filtros"])
+    update_report_data(final_page)
+    return download_analitico_spreadsheet(final_page, base["id"])
 
 
 def download_base(base: dict, headless: bool = True) -> Path:
@@ -229,7 +300,7 @@ def download_base(base: dict, headless: bool = True) -> Path:
             login(page)
 
             if base["id"] == "numero_contratos":
-                path = download_numero_contratos_report(page, base)
+                path = download_numero_contratos_report(context, page, base)
             else:
                 navigate_menu(page, base["looker_path"])
                 open_bloco_if_needed(page, base.get("bloco"))

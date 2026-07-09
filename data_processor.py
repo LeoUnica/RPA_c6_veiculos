@@ -114,8 +114,15 @@ def merge_into_original(df_novo: pd.DataFrame, original_path: Path, base: dict) 
     Alinha colunas com a base original, remove o mês atual da base original
     (se existir) e concatena os dados novos. Se a base ainda não tiver o mês
     atual, apenas adiciona os novos registros.
+
+    Quando `remover_mes_atual_antes_de_colar` está ativo, o arquivo baixado
+    também é restrito ao mês atual antes de colar - isso evita duplicar
+    meses anteriores quando o relatório usa uma janela "rolante" (ex: "Last
+    30 Days"), que sempre inclui alguns dias do mês anterior junto com o
+    mês atual.
     """
     date_col = DATE_COLUMN_BY_BASE.get(base["id"])
+    remover_mes_atual = base["regras"].get("remover_mes_atual_antes_de_colar")
 
     if not original_path.exists():
         logger.info("Base original não existe ainda, criando: %s", original_path)
@@ -124,15 +131,59 @@ def merge_into_original(df_novo: pd.DataFrame, original_path: Path, base: dict) 
     df_original = pd.read_excel(original_path)
     df_novo = _select_columns(df_novo, df_original, base)
 
-    if base["regras"].get("remover_mes_atual_antes_de_colar") and date_col and date_col in df_original.columns:
-        mask_mes_atual = _current_month_mask(df_original, date_col)
-        removidos = mask_mes_atual.sum()
+    if remover_mes_atual and date_col and date_col in df_original.columns:
+        mask_mes_atual_original = _current_month_mask(df_original, date_col)
+        removidos = mask_mes_atual_original.sum()
         if removidos:
             logger.info("Removendo %d linhas do mês atual na base original", removidos)
-        df_original = df_original[~mask_mes_atual]
+        df_original = df_original[~mask_mes_atual_original]
+
+        if date_col in df_novo.columns:
+            mask_mes_atual_novo = _current_month_mask(df_novo, date_col)
+            fora_do_mes = int((~mask_mes_atual_novo).sum())
+            if fora_do_mes:
+                logger.info(
+                    "Descartando %d linhas do arquivo baixado que não são do mês atual "
+                    "(já devem existir na base original de meses anteriores)",
+                    fora_do_mes,
+                )
+            df_novo = df_novo[mask_mes_atual_novo]
 
     df_final = pd.concat([df_original, df_novo], ignore_index=True)
     return df_final
+
+
+def _process_numero_contratos(downloaded_path: Path, base: dict) -> Path:
+    """
+    Fluxo específico da base "Número de Contratos":
+      1. Filtra Status Proposta = PROPOSTA PAGA e seleciona as colunas certas.
+      2. Salva o resultado na pasta "Prévia" (config.caminho_previa_numero_contratos).
+      3. Mescla com a planilha de origem oficial do ano correspondente
+         (remove o mês atual e cola só os dados novos do mês atual no
+         final, preservando o histórico) - ver `merge_into_original`.
+    """
+    df_tratado = pd.read_excel(downloaded_path)
+    df_tratado = _apply_row_filters(df_tratado, base)
+    df_tratado = _select_columns(df_tratado, None, base)
+
+    previa_path = config.caminho_previa_numero_contratos()
+    previa_path.parent.mkdir(parents=True, exist_ok=True)
+    df_tratado.to_excel(previa_path, index=False)
+    if base["regras"].get("aplicar_autofiltro_excel"):
+        _apply_excel_autofilter(previa_path)
+    logger.info("Base '%s' tratada (prévia): %s (%d linhas)", base["nome"], previa_path, len(df_tratado))
+
+    ano = date.today().year
+    origem_path = config.caminho_planilha_origem_numero_contratos(ano)
+    origem_path.parent.mkdir(parents=True, exist_ok=True)
+
+    df_final = merge_into_original(df_tratado, origem_path, base)
+    df_final.to_excel(origem_path, index=False)
+    if base["regras"].get("aplicar_autofiltro_excel"):
+        _apply_excel_autofilter(origem_path)
+
+    logger.info("Planilha de origem atualizada: %s (%d linhas)", origem_path, len(df_final))
+    return origem_path
 
 
 def process_base(downloaded_path: Path, base: dict) -> Path:
@@ -145,11 +196,21 @@ def process_base(downloaded_path: Path, base: dict) -> Path:
     esse pipeline - veja sharepoint_sync.upload_processed_base, que faz uma
     cópia direta do arquivo baixado sem reprocessar via pandas, conforme a
     instrução da equipe ("cole o arquivo e renomeie").
-    """
-    original_path = config.STAGING_DIR / f"{base['id']}_original.xlsx"
 
-    if base["regras"].get("modo") == "substituir_arquivo":
+    A base "Número de Contratos" (modo "planilha_origem_local") também não
+    usa SharePoint: os dados tratados vão para a pasta "Prévia" e depois
+    são mesclados com a planilha de origem oficial local, organizada por
+    ano - ver `_process_numero_contratos`.
+    """
+    modo = base["regras"].get("modo")
+
+    if modo == "substituir_arquivo":
         return downloaded_path
+
+    if modo == "planilha_origem_local":
+        return _process_numero_contratos(downloaded_path, base)
+
+    original_path = config.STAGING_DIR / f"{base['id']}_original.xlsx"
 
     df_novo = pd.read_excel(downloaded_path)
     df_novo = _apply_row_filters(df_novo, base)

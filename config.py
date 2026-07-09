@@ -42,6 +42,36 @@ SHAREPOINT_TENANT_ID = os.getenv("SHAREPOINT_TENANT_ID")
 # (Carteira de parceiros, Dias sem produção, Meta Financiamento e Seguro, etc.)
 SHAREPOINT_ROOT_FOLDER = os.getenv("SHAREPOINT_ROOT_FOLDER", "/Documentos Compartilhados/BI C6 Auto")
 
+# Pasta "Prévia" onde fica o arquivo baixado do Looker já tratado (colunas
+# selecionadas + filtro de Status Proposta), antes do merge com a planilha
+# de origem oficial.
+PREVIA_NUMERO_CONTRATOS_DIR = os.getenv(
+    "PREVIA_NUMERO_CONTRATOS_DIR",
+    r"C:\Users\leonardo.mudrik\Desktop\C6 Bank\Número de Contratos - Previa",
+)
+
+# Pasta raiz onde fica a planilha de origem oficial "Número de Contratos" -
+# organizada por ano, ex: ".../Numero de Contratos - 2026/Digitação
+# Analítico - 2026.xlsx".
+PLANILHA_ORIGEM_NUMERO_CONTRATOS_DIR = os.getenv(
+    "PLANILHA_ORIGEM_NUMERO_CONTRATOS_DIR",
+    r"C:\Users\leonardo.mudrik\Desktop\Setor Dados\Ana Price\Número de Contratos",
+)
+
+
+def caminho_previa_numero_contratos() -> Path:
+    """Caminho do arquivo 'prévia' (tratado, antes do merge) de Número de Contratos."""
+    return Path(PREVIA_NUMERO_CONTRATOS_DIR) / "Número de Contratos - Previa.xlsx"
+
+
+def caminho_planilha_origem_numero_contratos(ano: int) -> Path:
+    """Caminho da planilha de origem oficial 'Número de Contratos' de um ano específico."""
+    return (
+        Path(PLANILHA_ORIGEM_NUMERO_CONTRATOS_DIR)
+        / f"Numero de Contratos - {ano}"
+        / f"Digitação Analítico - {ano}.xlsx"
+    )
+
 # --------------------------------------------------------------------------
 # Definição das 4 bases (extraído do material da equipe)
 # --------------------------------------------------------------------------
@@ -87,6 +117,11 @@ BASES = [
         "pasta_sharepoint": "Número de Contratos",
         "frequencia": "diaria",
         "regras": {
+            # Esta base não usa SharePoint: os dados tratados são salvos na
+            # pasta "Prévia" e depois mesclados com a planilha de origem
+            # oficial local, organizada por ano (ver
+            # data_processor._process_numero_contratos).
+            "modo": "planilha_origem_local",
             # Colunas a manter na planilha "Analítico" baixada - o restante é excluído.
             "colunas_manter": [
                 "ID Proposta",
