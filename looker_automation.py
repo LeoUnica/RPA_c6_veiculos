@@ -1,19 +1,14 @@
 """
 Automação do download dos relatórios no Looker via Playwright.
 
-IMPORTANTE: os seletores (get_by_text, get_by_role, etc.) abaixo são um
-ESQUELETO baseado no fluxo descrito nos slides. Você vai precisar abrir o
-Looker de vocês, inspecionar os elementos reais (botões de menu, filtro de
-data, botão "Download") e ajustar os seletores marcados com "# TODO".
+As 4 bases (numero_contratos, dias_sem_producao, meta_financiamento_seguro,
+carteira_parceiros) têm cada uma seu próprio fluxo dedicado de navegação e
+download, validado rodando de verdade contra o portal - não são mais um
+esqueleto. O relatório é hospedado no Google Looker de verdade, embutido
+dentro do WebAutorizador via janelas pop-up sucessivas.
 
-A base "numero_contratos" ("Acompanhamento Veículos" > "Analítico") já tem
-um fluxo detalhado (fornecido pela equipe) implementado em
-`download_numero_contratos_report` - os seletores de ícone (svg) e texto
-foram copiados do HTML real informado pela equipe, mas alguns pontos ainda
-têm "# TODO" onde a estrutura exata da página não foi confirmada.
-
-Rodar `python looker_automation.py --base numero_contratos --debug` abre o
-navegador visível (headless=False) para você comparar com o site real.
+Rodar `python looker_automation.py --base <id> --debug` abre o navegador
+visível (headless=False) para acompanhar o fluxo no site real.
 """
 
 import argparse
@@ -59,52 +54,6 @@ def login(page: Page):
     page.locator("#ESenha_CAMPO").fill(config.LOOKER_PASSWORD)
     page.locator("#lnkEntrar").click()
     page.wait_for_load_state("networkidle")
-
-
-def navigate_menu(page: Page, looker_path: list[str]):
-    """Clica sequencialmente nos itens de menu até chegar no relatório."""
-    for item in looker_path:
-        # TODO: confirmar se o menu do Looker usa <a>, <button> ou <div role="menuitem">
-        page.get_by_text(item, exact=True).click()
-        page.wait_for_timeout(800)  # pequena espera para o submenu carregar
-
-
-def apply_value_filter(page: Page, filtro_valor: str):
-    """Aplica o filtro de Valor: este mês / este ano."""
-    filtro_map = {
-        "este_mes": "Is in this month",
-        "este_ano": "In this Year",
-    }
-    texto_filtro = filtro_map[filtro_valor]
-
-    # TODO: ajustar seletor do campo de filtro "Valor"
-    page.get_by_label("Valor").click()
-    page.get_by_text(texto_filtro, exact=True).click()
-    page.wait_for_load_state("networkidle")
-
-
-def open_bloco_if_needed(page: Page, bloco: str | None):
-    if bloco:
-        # TODO: ajustar seletor do bloco (ex: "Bloco de Metas - Por Filial")
-        page.get_by_text(bloco, exact=True).click()
-        page.wait_for_timeout(800)
-
-
-def download_report(page: Page, base_id: str) -> Path:
-    """Clica em Download > Excel > All results e salva o arquivo."""
-    with page.expect_download() as download_info:
-        # TODO: ajustar para o menu real de export do Looker
-        page.get_by_role("button", name="Download").click()
-        page.get_by_text("Excel", exact=True).click()
-        # marca "All results" conforme especificado no material da equipe
-        page.get_by_label("All results").check()
-        page.get_by_role("button", name="Download", exact=True).click()
-
-    download = download_info.value
-    dest_path = config.DOWNLOAD_DIR / f"{base_id}_{int(time.time())}.xlsx"
-    download.save_as(dest_path)
-    logger.info("Arquivo baixado: %s", dest_path)
-    return dest_path
 
 
 # --------------------------------------------------------------------------
@@ -231,12 +180,16 @@ def _find_tile_actions_button(final_page: Page, near: Locator) -> Locator:
     return melhor
 
 
-def _complete_download_dialog(final_page: Page, base_id: str) -> Path:
+def _complete_download_dialog(final_page: Page, base_id: str, download_timeout_ms: int = 60000) -> Path:
     """
     A partir do menu "Tile actions" já aberto, clica em "Download data",
     seleciona o formato Excel, expande "Advanced data options" e marca as
     opções de exportação completa antes de baixar. Compartilhado por todas
     as bases que usam este mesmo fluxo de download do Looker.
+
+    `download_timeout_ms` pode ser aumentado para bases com volumes maiores
+    de dados (ex: Carteira e Parceiros, que baixa o ano inteiro) - o Looker
+    demora mais para gerar o arquivo antes do download começar.
     """
     final_page.get_by_text("Download data", exact=True).click()
     final_page.wait_for_timeout(1500)
@@ -263,7 +216,7 @@ def _complete_download_dialog(final_page: Page, base_id: str) -> Path:
     # Number of rows to include -> "All results"
     final_page.get_by_text("All results", exact=True).click()
 
-    with final_page.expect_download(timeout=60000) as download_info:
+    with final_page.expect_download(timeout=download_timeout_ms) as download_info:
         final_page.get_by_role("button", name="Download", exact=True).click()
 
     download = download_info.value
@@ -512,6 +465,95 @@ def download_meta_financiamento_seguro_report(context: BrowserContext, page: Pag
     return download_bloco_metas_spreadsheet(final_page, base["id"], base["secao_tabela"])
 
 
+# --------------------------------------------------------------------------
+# Fluxo dedicado - base "carteira_parceiros" (Painel Carteira), validado
+# rodando de verdade contra o portal.
+# --------------------------------------------------------------------------
+
+def open_painel_carteira(context: BrowserContext, page: Page, base: dict) -> Page:
+    """
+    Navega até o dashboard "Painel Carteira": Relatórios (hover) >
+    Relatórios Gerenciais (abre pop-up com o catálogo) > card "Auto" > link
+    "Carteira" (dentro do card "Carteira") - abre outra pop-up já na tabela
+    certa (não tem abas, diferente das outras bases).
+    """
+    page.get_by_text("Relatórios", exact=True).first.hover()
+    page.wait_for_timeout(500)
+
+    with context.expect_page(timeout=15000) as popup_info:
+        page.get_by_text("Relatórios Gerenciais", exact=True).first.click()
+    catalogo = popup_info.value
+    catalogo.wait_for_load_state("networkidle", timeout=20000)
+    catalogo.wait_for_timeout(5000)
+
+    catalogo.get_by_text("Auto", exact=False).first.click()
+    catalogo.wait_for_timeout(3000)
+    catalogo.wait_for_load_state("networkidle", timeout=15000)
+    catalogo.wait_for_timeout(2000)
+
+    # O card "Carteira" tem DOIS elementos com o mesmo texto: o título do
+    # card (H2, não clicável) e o link de fato (SPAN) - usamos `.nth(1)`.
+    link = catalogo.get_by_text(base["link_relatorio"], exact=True).nth(1)
+    with context.expect_page(timeout=10000) as popup_info2:
+        link.click(force=True)
+    final_page = popup_info2.value
+
+    final_page.wait_for_load_state("domcontentloaded", timeout=20000)
+    final_page.wait_for_timeout(8000)
+    return final_page
+
+
+def apply_referencia_year_filter(final_page: Page):
+    """
+    Abre o painel de filtros e configura "Referência" (sempre o primeiro
+    filtro do painel). O valor padrão salvo no dashboard é "is this month",
+    então trocamos a segunda parte do seletor composto de "month" para
+    "year" (mantendo o tipo "is this").
+    """
+    final_page.get_by_text("filters", exact=False).first.click()
+    final_page.wait_for_timeout(1500)
+
+    final_page.get_by_text(re.compile(r"^is "), exact=False).first.click()
+    final_page.wait_for_timeout(800)
+
+    unidade = final_page.locator('input[type="text"][role="combobox"]').nth(1)
+    unidade.click(force=True)
+    final_page.wait_for_timeout(500)
+    final_page.get_by_text("year", exact=True).first.click(force=True)
+    final_page.wait_for_timeout(800)
+
+    final_page.keyboard.press("Escape")
+    final_page.wait_for_timeout(500)
+
+
+def download_carteira_spreadsheet(final_page: Page, base_id: str) -> Path:
+    """
+    Localiza o botão "Tile actions" da tabela usando o cabeçalho de coluna
+    "Cnpj Da Loja" como referência (esse relatório não tem uma faixa de
+    título separada acima da tabela, mesma situação de Dias sem Produção).
+    O timeout de download é maior (120s) porque baixa o ano inteiro.
+    """
+    referencia = final_page.get_by_text("Cnpj Da Loja", exact=True).first
+    referencia.scroll_into_view_if_needed()
+    final_page.wait_for_timeout(1000)
+
+    tile_button = _find_tile_actions_button(final_page, referencia)
+    tile_button.hover()
+    final_page.wait_for_timeout(300)
+    tile_button.click(force=True)
+    final_page.wait_for_timeout(1000)
+
+    return _complete_download_dialog(final_page, base_id, download_timeout_ms=120000)
+
+
+def download_carteira_parceiros_report(context: BrowserContext, page: Page, base: dict) -> Path:
+    """Fluxo completo específico da base 'carteira_parceiros'."""
+    final_page = open_painel_carteira(context, page, base)
+    apply_referencia_year_filter(final_page)
+    update_report_data(final_page)
+    return download_carteira_spreadsheet(final_page, base["id"])
+
+
 def download_base(base: dict, headless: bool = True) -> Path:
     """Executa o fluxo completo de download para uma base configurada."""
     with sync_playwright() as p:
@@ -528,11 +570,10 @@ def download_base(base: dict, headless: bool = True) -> Path:
                 path = download_dias_sem_producao_report(context, page, base)
             elif base["id"] == "meta_financiamento_seguro":
                 path = download_meta_financiamento_seguro_report(context, page, base)
+            elif base["id"] == "carteira_parceiros":
+                path = download_carteira_parceiros_report(context, page, base)
             else:
-                navigate_menu(page, base["looker_path"])
-                open_bloco_if_needed(page, base.get("bloco"))
-                apply_value_filter(page, base["filtro_valor"])
-                path = download_report(page, base["id"])
+                raise ValueError(f"Base '{base['id']}' não tem fluxo de download implementado")
         finally:
             context.close()
             browser.close()

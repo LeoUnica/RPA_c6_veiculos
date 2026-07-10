@@ -116,6 +116,28 @@ def caminho_planilha_origem_meta_financiamento_seguro(ano: int) -> Path:
     """Caminho da planilha de origem oficial de Meta Financiamento e Seguro de um ano específico."""
     return Path(PLANILHA_ORIGEM_META_FINANCIAMENTO_SEGURO_DIR) / f"Meta Financiamento Seguro - {ano}.xlsx"
 
+# Pasta "Prévia" e pasta raiz da planilha de origem oficial de "Carteira e
+# Parceiros" - também um arquivo por ano na mesma pasta (sem subpasta),
+# ex: "CARTEIRA- 2026.xlsx".
+PREVIA_CARTEIRA_PARCEIROS_DIR = os.getenv(
+    "PREVIA_CARTEIRA_PARCEIROS_DIR",
+    r"C:\Users\leonardo.mudrik\Desktop\C6 Bank\Carteira de parceiros e filiais - Previa",
+)
+PLANILHA_ORIGEM_CARTEIRA_PARCEIROS_DIR = os.getenv(
+    "PLANILHA_ORIGEM_CARTEIRA_PARCEIROS_DIR",
+    r"C:\Users\leonardo.mudrik\Desktop\Setor Dados\Ana Price\Carteira de parceiros e filiais",
+)
+
+
+def caminho_previa_carteira_parceiros() -> Path:
+    """Caminho do arquivo 'prévia' (substituído a cada execução) de Carteira e Parceiros."""
+    return Path(PREVIA_CARTEIRA_PARCEIROS_DIR) / "Carteira de parceiros e filiais - Previa.xlsx"
+
+
+def caminho_planilha_origem_carteira_parceiros(ano: int) -> Path:
+    """Caminho da planilha de origem oficial de Carteira e Parceiros de um ano específico."""
+    return Path(PLANILHA_ORIGEM_CARTEIRA_PARCEIROS_DIR) / f"CARTEIRA- {ano}.xlsx"
+
 # --------------------------------------------------------------------------
 # Definição das 4 bases (extraído do material da equipe)
 # --------------------------------------------------------------------------
@@ -236,20 +258,24 @@ BASES = [
     {
         "id": "carteira_parceiros",
         "nome": "Carteira e Parceiros",
-        "looker_path": ["Auto", "Carteira e Parceiros"],
-        "filtro_valor": "este_ano",               # "In this Year"
-        "bloco": None,
+        # Caminho até abrir o painel "Auto" (Relatórios > Relatórios
+        # Gerenciais > Auto). A partir daí, clica no link "Carteira" (dentro
+        # do card "Carteira") - tratado à parte em looker_automation.py.
+        "looker_path": ["Relatórios", "Relatórios Gerenciais", "Auto"],
+        "link_relatorio": "Carteira",
         "pasta_sharepoint": "Carteira de parceiros e filiais",
         "frequencia": "diaria",
         "regras": {
-            # Esta base não faz merge nem passa pelo pandas: o arquivo
-            # baixado é copiado como está e sobe para o SharePoint com o
-            # nome da base já existente ("cole e renomeie", conforme o
-            # material da equipe) - ver data_processor.process_base.
-            "modo": "substituir_arquivo",
+            # Esta base não usa SharePoint: os dados baixados (todas as
+            # colunas, sem filtro de colunas) substituem a "Prévia" por
+            # inteiro a cada execução (o filtro "Referência" é "Este Ano",
+            # então a Prévia sempre reflete o ano corrente completo) e só
+            # as linhas realmente novas (comparação por linha inteira) são
+            # coladas na planilha de origem oficial daquele ano - ver
+            # data_processor._process_carteira_parceiros.
+            "modo": "planilha_origem_local_carteira_parceiros",
             "remover_colunas": [],
             "filtro_status_proposta": None,
-            "remover_mes_atual_antes_de_colar": False,
         },
     },
 ]
