@@ -32,10 +32,12 @@ logger = logging.getLogger("main")
 def run_base(base: dict):
     logger.info("=== Iniciando base: %s ===", base["nome"])
     try:
-        # A base "Número de Contratos" (modo "planilha_origem_local") não usa
-        # SharePoint: os dados vão direto para a planilha de origem local
-        # (ver data_processor._process_numero_contratos).
-        usa_sharepoint = base["regras"].get("modo") != "planilha_origem_local"
+        # Bases com planilha de origem local (Número de Contratos, Dias sem
+        # Produção) não usam SharePoint: os dados vão direto para o arquivo
+        # local (ver data_processor._process_numero_contratos e
+        # _process_dias_sem_producao).
+        modo = base["regras"].get("modo") or ""
+        usa_sharepoint = not modo.startswith("planilha_origem_local")
 
         # 1. Baixa a base original atual do SharePoint (para o merge ficar certo)
         if usa_sharepoint:

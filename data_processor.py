@@ -30,8 +30,10 @@ logger = logging.getLogger("data_processor")
 DATE_COLUMN_BY_BASE = {
     "meta_financiamento_seguro": "Data",
     "numero_contratos": "Dt Relatório",
-    "dias_sem_producao": "Data",
     "carteira_parceiros": None,  # essa base é substituição total, não usa data
+    # "dias_sem_producao" não usa esse mecanismo genérico - o mês é
+    # identificado pela coluna "Safra Mes" (formato AAAAMM), tratada em
+    # `_process_dias_sem_producao`.
 }
 
 
@@ -256,6 +258,70 @@ def _process_numero_contratos(downloaded_path: Path, base: dict) -> Path:
     return origem_path
 
 
+CHAVE_UNICA_DIAS_SEM_PRODUCAO = ["Cd Loja", "Safra Mes"]
+
+
+def _safra_mes_atual() -> int:
+    """Mês/ano atual no formato AAAAMM, igual à coluna 'Safra Mes' do relatório."""
+    hoje = date.today()
+    return hoje.year * 100 + hoje.month
+
+
+def _process_dias_sem_producao(downloaded_path: Path, base: dict) -> Path:
+    """
+    Fluxo específico da base "Dias sem Produção":
+      1. Seleciona as colunas certas (essa base não tem filtro de status).
+      2. Salva o resultado tratado na pasta "Prévia".
+      3. Remove da planilha de origem oficial os registros do mês atual
+         (identificado pela coluna "Safra Mes", formato AAAAMM) e cola os
+         dados tratados no final, preservando o histórico. Diferente de
+         Número de Contratos, o relatório já vem filtrado para "Este mês"
+         (sem janela rolante), então o arquivo baixado não precisa ser
+         restrito por mês antes de colar.
+    """
+    chave = CHAVE_UNICA_DIAS_SEM_PRODUCAO
+
+    df_tratado = pd.read_excel(downloaded_path)
+    df_tratado = _select_columns(df_tratado, None, base)
+
+    previa_path = config.caminho_previa_dias_sem_producao()
+    previa_path.parent.mkdir(parents=True, exist_ok=True)
+    df_tratado.to_excel(previa_path, index=False)
+    if base["regras"].get("aplicar_autofiltro_excel"):
+        _apply_excel_autofilter(previa_path)
+    logger.info("Base '%s' tratada (prévia): %s (%d linhas)", base["nome"], previa_path, len(df_tratado))
+
+    origem_path = config.caminho_planilha_origem_dias_sem_producao()
+    origem_path.parent.mkdir(parents=True, exist_ok=True)
+    safra_atual = _safra_mes_atual()
+
+    if origem_path.exists():
+        df_origem = pd.read_excel(origem_path)
+        removidos = int((df_origem["Safra Mes"] == safra_atual).sum())
+        if removidos:
+            logger.info(
+                "Removendo %d linhas do mês atual (Safra Mes=%d) na planilha de origem",
+                removidos, safra_atual,
+            )
+        df_origem = df_origem[df_origem["Safra Mes"] != safra_atual]
+    else:
+        df_origem = pd.DataFrame(columns=df_tratado.columns)
+
+    df_final = pd.concat([df_origem, df_tratado], ignore_index=True)
+    # segurança extra contra duplicados, mantendo a versão mais recente baixada
+    df_final = df_final.drop_duplicates(subset=chave, keep="last")
+
+    df_final.to_excel(origem_path, index=False)
+    if base["regras"].get("aplicar_autofiltro_excel"):
+        _apply_excel_autofilter(origem_path)
+
+    logger.info(
+        "Planilha de origem atualizada: %s (+%d linhas do mês atual, %d no total)",
+        origem_path, len(df_tratado), len(df_final),
+    )
+    return origem_path
+
+
 def process_base(downloaded_path: Path, base: dict) -> Path:
     """
     Pipeline completo para uma base: filtra linhas, funde com a base
@@ -279,6 +345,9 @@ def process_base(downloaded_path: Path, base: dict) -> Path:
 
     if modo == "planilha_origem_local":
         return _process_numero_contratos(downloaded_path, base)
+
+    if modo == "planilha_origem_local_dias_sem_producao":
+        return _process_dias_sem_producao(downloaded_path, base)
 
     original_path = config.STAGING_DIR / f"{base['id']}_original.xlsx"
 

@@ -229,23 +229,13 @@ def _find_tile_actions_button(final_page: Page, near: Locator) -> Locator:
     return melhor
 
 
-def download_analitico_spreadsheet(final_page: Page, base_id: str) -> Path:
+def _complete_download_dialog(final_page: Page, base_id: str) -> Path:
     """
-    Rola até a planilha "Analítico", abre o menu de 3 pontinhos daquela
-    planilha (fica quase invisível até o hover), clica em "Download data",
+    A partir do menu "Tile actions" já aberto, clica em "Download data",
     seleciona o formato Excel, expande "Advanced data options" e marca as
-    opções de exportação completa antes de baixar.
+    opções de exportação completa antes de baixar. Compartilhado por todas
+    as bases que usam este mesmo fluxo de download do Looker.
     """
-    analitico_section = final_page.get_by_text("Analítico", exact=True).last
-    analitico_section.scroll_into_view_if_needed()
-    final_page.wait_for_timeout(1000)
-
-    tile_button = _find_tile_actions_button(final_page, analitico_section)
-    tile_button.hover()
-    final_page.wait_for_timeout(300)
-    tile_button.click(force=True)
-    final_page.wait_for_timeout(1000)
-
     final_page.get_by_text("Download data", exact=True).click()
     final_page.wait_for_timeout(1500)
 
@@ -281,12 +271,118 @@ def download_analitico_spreadsheet(final_page: Page, base_id: str) -> Path:
     return dest_path
 
 
+def download_analitico_spreadsheet(final_page: Page, base_id: str) -> Path:
+    """
+    Rola até a planilha "Analítico", abre o menu de 3 pontinhos daquela
+    planilha (fica quase invisível até o hover) e completa o download.
+    """
+    analitico_section = final_page.get_by_text("Analítico", exact=True).last
+    analitico_section.scroll_into_view_if_needed()
+    final_page.wait_for_timeout(1000)
+
+    tile_button = _find_tile_actions_button(final_page, analitico_section)
+    tile_button.hover()
+    final_page.wait_for_timeout(300)
+    tile_button.click(force=True)
+    final_page.wait_for_timeout(1000)
+
+    return _complete_download_dialog(final_page, base_id)
+
+
 def download_numero_contratos_report(context: BrowserContext, page: Page, base: dict) -> Path:
     """Fluxo completo específico da base 'numero_contratos'."""
     final_page = open_acompanhamento_veiculos_analitico(context, page)
     apply_analitico_filters(final_page, base["filtros"])
     update_report_data(final_page)
     return download_analitico_spreadsheet(final_page, base["id"])
+
+
+# --------------------------------------------------------------------------
+# Fluxo dedicado - base "dias_sem_producao" (SLA - Última Atuação Comercial
+# - Analítico), validado rodando de verdade contra o portal.
+# --------------------------------------------------------------------------
+
+def open_sla_analitico(context: BrowserContext, page: Page, base: dict) -> Page:
+    """
+    Navega até o dashboard "SLA Última Atuação Comercial - Analítico":
+    Relatórios (hover) > Relatórios Gerenciais (abre pop-up com o catálogo)
+    > card "Auto" > link "SLA - Última atuação comercial - Analítico"
+    (dentro do card "SLA - Última atuação da loja") - abre outra pop-up já
+    na aba certa ("SLA Analítico"), com o filtro "Referencia Month" já em
+    "is this month" por padrão.
+    """
+    page.get_by_text("Relatórios", exact=True).first.hover()
+    page.wait_for_timeout(500)
+
+    with context.expect_page(timeout=15000) as popup_info:
+        page.get_by_text("Relatórios Gerenciais", exact=True).first.click()
+    catalogo = popup_info.value
+    catalogo.wait_for_load_state("networkidle", timeout=20000)
+    catalogo.wait_for_timeout(5000)
+
+    catalogo.get_by_text("Auto", exact=False).first.click()
+    catalogo.wait_for_timeout(3000)
+    catalogo.wait_for_load_state("networkidle", timeout=15000)
+    catalogo.wait_for_timeout(2000)
+
+    link = catalogo.get_by_text(base["link_relatorio"], exact=True).first
+    with context.expect_page(timeout=10000) as popup_info2:
+        link.click(force=True)
+    final_page = popup_info2.value
+
+    final_page.wait_for_load_state("domcontentloaded", timeout=20000)
+    final_page.wait_for_timeout(8000)
+    return final_page
+
+
+def verify_referencia_month_filter(final_page: Page):
+    """
+    Abre o painel de filtros e confere que "Referencia Month" já está em
+    "is this month" (confirmado via querystring "Referencia+Month=this+
+    month"). Só avisa no log se algum dia vier diferente - o clique para
+    trocar esse filtro específico (um seletor de data relativa composto,
+    tipo "is this" + "month") ainda não foi mapeado/validado.
+    """
+    final_page.get_by_text("filters", exact=False).first.click()
+    final_page.wait_for_timeout(1500)
+
+    if final_page.get_by_text("is this month", exact=True).count() == 0:
+        logger.warning(
+            "Filtro 'Referencia Month' não está em 'is this month' - ajuste "
+            "manual pode ser necessário (fluxo de troca ainda não mapeado)."
+        )
+    # Não precisa fechar o painel de filtros - o botão "Update" continua
+    # clicável normalmente com o painel aberto.
+
+
+def download_sla_analitico_spreadsheet(final_page: Page, base_id: str) -> Path:
+    """
+    Localiza o botão "Tile actions" da tabela SLA Analítico usando como
+    referência o cabeçalho de coluna "Cnpj Da Loja" - esse relatório não
+    tem uma faixa de título separada acima da tabela (como "Analítico" em
+    Número de Contratos), então usar o título da página como referência
+    pega o botão errado (uma tabela de navegação interna escondida). A
+    própria coluna da tabela funciona como ponto de referência correto.
+    """
+    referencia = final_page.get_by_text("Cnpj Da Loja", exact=True).first
+    referencia.scroll_into_view_if_needed()
+    final_page.wait_for_timeout(1000)
+
+    tile_button = _find_tile_actions_button(final_page, referencia)
+    tile_button.hover()
+    final_page.wait_for_timeout(300)
+    tile_button.click(force=True)
+    final_page.wait_for_timeout(1000)
+
+    return _complete_download_dialog(final_page, base_id)
+
+
+def download_dias_sem_producao_report(context: BrowserContext, page: Page, base: dict) -> Path:
+    """Fluxo completo específico da base 'dias_sem_producao'."""
+    final_page = open_sla_analitico(context, page, base)
+    verify_referencia_month_filter(final_page)
+    update_report_data(final_page)
+    return download_sla_analitico_spreadsheet(final_page, base["id"])
 
 
 def download_base(base: dict, headless: bool = True) -> Path:
@@ -301,6 +397,8 @@ def download_base(base: dict, headless: bool = True) -> Path:
 
             if base["id"] == "numero_contratos":
                 path = download_numero_contratos_report(context, page, base)
+            elif base["id"] == "dias_sem_producao":
+                path = download_dias_sem_producao_report(context, page, base)
             else:
                 navigate_menu(page, base["looker_path"])
                 open_bloco_if_needed(page, base.get("bloco"))

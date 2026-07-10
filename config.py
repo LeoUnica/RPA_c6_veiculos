@@ -72,6 +72,27 @@ def caminho_planilha_origem_numero_contratos(ano: int) -> Path:
         / f"Digitação Analítico - {ano}.xlsx"
     )
 
+# Pasta "Prévia" e planilha de origem oficial de "Dias sem Produção" (essa
+# base não é organizada por ano - é um único arquivo acumulando tudo).
+PREVIA_DIAS_SEM_PRODUCAO_DIR = os.getenv(
+    "PREVIA_DIAS_SEM_PRODUCAO_DIR",
+    r"C:\Users\leonardo.mudrik\Desktop\C6 Bank\Dias sem produção - Previa",
+)
+PLANILHA_ORIGEM_DIAS_SEM_PRODUCAO_DIR = os.getenv(
+    "PLANILHA_ORIGEM_DIAS_SEM_PRODUCAO_DIR",
+    r"C:\Users\leonardo.mudrik\Desktop\Setor Dados\Ana Price\Dias sem produção",
+)
+
+
+def caminho_previa_dias_sem_producao() -> Path:
+    """Caminho do arquivo 'prévia' (tratado, antes do merge) de Dias sem Produção."""
+    return Path(PREVIA_DIAS_SEM_PRODUCAO_DIR) / "Dias sem produção - Previa.xlsx"
+
+
+def caminho_planilha_origem_dias_sem_producao() -> Path:
+    """Caminho da planilha de origem oficial de Dias sem Produção."""
+    return Path(PLANILHA_ORIGEM_DIAS_SEM_PRODUCAO_DIR) / "DIAS SEM PRODUCAO.xlsx"
+
 # --------------------------------------------------------------------------
 # Definição das 4 bases (extraído do material da equipe)
 # --------------------------------------------------------------------------
@@ -143,18 +164,38 @@ BASES = [
     {
         "id": "dias_sem_producao",
         "nome": "Dias sem Produção",
-        "looker_path": ["Auto", "SLA - Última Atuação da Loja", "SLA – Última Atuação Comercial – Analítico"],
-        "filtro_valor": "este_mes",
+        # Caminho até abrir o painel "Auto" (Relatórios > Relatórios
+        # Gerenciais > Auto). A partir daí, clica no link "SLA - Última
+        # atuação comercial - Analítico" (dentro do card "SLA - Última
+        # atuação da loja") - tratado à parte em looker_automation.py.
+        "looker_path": ["Relatórios", "Relatórios Gerenciais", "Auto"],
+        "link_relatorio": "SLA - Última atuação comercial - Analítico",
         "bloco": None,
         "pasta_sharepoint": "Dias sem produção",
         "frequencia": "semanal_segunda",         # normalmente às segundas-feiras
         "regras": {
-            # Este é o caso que o material da equipe descreve como "comparar
-            # via PROCX com a base original" - automatizado pelo alinhamento
-            # de colunas em data_processor.py, sem precisar listar manualmente.
+            # Esta base não usa SharePoint: os dados tratados são salvos na
+            # pasta "Prévia" e depois mesclados com a planilha de origem
+            # oficial local (ver data_processor._process_dias_sem_producao).
+            "modo": "planilha_origem_local_dias_sem_producao",
+            # Colunas a manter na planilha baixada - o restante é excluído.
+            "colunas_manter": [
+                "Cnpj Da Loja",
+                "Cd Loja",
+                "Nm Loja",
+                "Safra Mes",
+                "Faixa Qtde Meses Ult Simulacao",
+                "Data Ultima Simulacao Date",
+                "Faixa Qtde Meses Ult Proposta",
+                "Data Ultima Proposta Date",
+                "Faixa Qtde Meses Ult Contrato",
+                "Data Ultimo Contrato Date",
+                "Valor Financiamento",
+                "Qtde. Financiamento",
+            ],
             "remover_colunas": [],
             "filtro_status_proposta": None,
-            "remover_mes_atual_antes_de_colar": True,
+            "aplicar_autofiltro_excel": True,
         },
     },
     {
