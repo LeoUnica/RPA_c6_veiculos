@@ -68,7 +68,7 @@ def main():
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--base", help="id da base a rodar (ver config.py)")
     group.add_argument("--all", action="store_true", help="roda todas as bases")
-    group.add_argument("--frequencia", choices=["diaria", "semanal", "semanal_segunda"],
+    group.add_argument("--frequencia", choices=["diaria", "semanal", "semanal_segunda", "mensal"],
                         help="roda todas as bases dessa frequência")
     args = parser.parse_args()
 

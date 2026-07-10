@@ -3,3 +3,4 @@ pandas==2.3.3
 openpyxl==3.1.5
 Office365-REST-Python-Client==2.5.9
 python-dotenv==1.0.1
+holidays==0.75

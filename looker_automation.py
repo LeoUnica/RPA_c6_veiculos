@@ -20,8 +20,10 @@ import argparse
 import logging
 import re
 import time
+from datetime import date, timedelta
 from pathlib import Path
 
+import holidays
 from playwright.sync_api import sync_playwright, BrowserContext, Locator, Page
 
 import config
@@ -385,6 +387,131 @@ def download_dias_sem_producao_report(context: BrowserContext, page: Page, base:
     return download_sla_analitico_spreadsheet(final_page, base["id"])
 
 
+# --------------------------------------------------------------------------
+# Fluxo dedicado - base "meta_financiamento_seguro" (Apuração Parceiro -
+# Resumo > Bloco de Metas - Por Filial), validado rodando de verdade contra
+# o portal.
+# --------------------------------------------------------------------------
+
+def _dia_util_mg(dia: date) -> bool:
+    """Considera dia útil: seg-sex e não feriado nacional/estadual de MG."""
+    if dia.weekday() >= 5:  # 5=sábado, 6=domingo
+        return False
+    feriados_mg = holidays.Brazil(state="MG", years=dia.year)
+    return dia not in feriados_mg
+
+
+def deve_usar_janela_curta_safra_mes(hoje: date | None = None) -> bool:
+    """
+    Regra da virada de mês de "Meta Financiamento e Seguro": se hoje é dia 1
+    ou 2 do mês E o último dia do mês anterior não foi dia útil em MG
+    (fim de semana ou feriado, calculado com a biblioteca `holidays`), a
+    apuração de fim do mês anterior pode ainda não ter sido processada -
+    nesse caso usamos "is in the last 3 days" em vez de "is this month" no
+    filtro "Safra Mês", para não perder esses dados.
+    """
+    hoje = hoje or date.today()
+    if hoje.day not in (1, 2):
+        return False
+    ultimo_dia_mes_anterior = date(hoje.year, hoje.month, 1) - timedelta(days=1)
+    return not _dia_util_mg(ultimo_dia_mes_anterior)
+
+
+def open_resumo_parceiro(context: BrowserContext, page: Page, base: dict) -> Page:
+    """
+    Navega até o dashboard "Apuração Parceiro - Resumo": Relatórios (hover)
+    > Relatórios Gerenciais (abre pop-up com o catálogo) > card "Auto" >
+    link "Resumo Apuração Parceiro 2.0" (dentro do card "Apuração Parceiro
+    2.0") - abre outra pop-up já na aba "Resumo".
+    """
+    page.get_by_text("Relatórios", exact=True).first.hover()
+    page.wait_for_timeout(500)
+
+    with context.expect_page(timeout=15000) as popup_info:
+        page.get_by_text("Relatórios Gerenciais", exact=True).first.click()
+    catalogo = popup_info.value
+    catalogo.wait_for_load_state("networkidle", timeout=20000)
+    catalogo.wait_for_timeout(5000)
+
+    catalogo.get_by_text("Auto", exact=False).first.click()
+    catalogo.wait_for_timeout(3000)
+    catalogo.wait_for_load_state("networkidle", timeout=15000)
+    catalogo.wait_for_timeout(2000)
+
+    link = catalogo.get_by_text(base["link_relatorio"], exact=True).first
+    with context.expect_page(timeout=10000) as popup_info2:
+        link.click(force=True)
+    final_page = popup_info2.value
+
+    final_page.wait_for_load_state("domcontentloaded", timeout=20000)
+    final_page.wait_for_timeout(8000)
+    return final_page
+
+
+def apply_safra_mes_filter(final_page: Page):
+    """
+    Abre o painel de filtros e configura "Safra Mês" (sempre o primeiro
+    filtro do painel - mesmo truque de regex "^is " usado em Número de
+    Contratos). O valor padrão salvo no dashboard é "is in the last 6
+    months", então SEMPRE precisamos trocar (diferente das outras bases,
+    onde o padrão já vinha certo):
+      - Caso normal: muda para "is this" + "month".
+      - Caso especial (`deve_usar_janela_curta_safra_mes()`): muda para
+        "is in the last" + "3" + "days", para não perder a apuração de fim
+        do mês anterior quando não houve dia útil antes do dia 01.
+    """
+    final_page.get_by_text("filters", exact=False).first.click()
+    final_page.wait_for_timeout(1500)
+
+    final_page.get_by_text(re.compile(r"^is "), exact=False).first.click()
+    final_page.wait_for_timeout(800)
+
+    if deve_usar_janela_curta_safra_mes():
+        # já abre em "is in the last" por padrão - só ajusta número e unidade
+        final_page.locator('input[type="number"]').first.fill("3")
+        final_page.wait_for_timeout(300)
+        unidade = final_page.locator('input[type="text"][role="combobox"]').nth(1)
+        unidade.click(force=True)
+        final_page.wait_for_timeout(500)
+        final_page.get_by_text("days", exact=True).first.click(force=True)
+        logger.info("Safra Mês: usando janela curta 'is in the last 3 days' (virada de mês sem dia útil antes).")
+    else:
+        final_page.get_by_text("is in the last", exact=True).first.click(force=True)
+        final_page.wait_for_timeout(800)
+        final_page.get_by_text("is this", exact=True).first.click(force=True)
+        final_page.wait_for_timeout(800)
+
+    final_page.keyboard.press("Escape")
+    final_page.wait_for_timeout(500)
+
+
+def download_bloco_metas_spreadsheet(final_page: Page, base_id: str, secao_tabela: str) -> Path:
+    """
+    Rola até a seção "Bloco de Metas - Por Filial" (faixa de título cinza
+    acima da tabela, igual ao padrão de "Analítico" em Número de
+    Contratos) e completa o download.
+    """
+    secao = final_page.get_by_text(secao_tabela, exact=True).last
+    secao.scroll_into_view_if_needed()
+    final_page.wait_for_timeout(1000)
+
+    tile_button = _find_tile_actions_button(final_page, secao)
+    tile_button.hover()
+    final_page.wait_for_timeout(300)
+    tile_button.click(force=True)
+    final_page.wait_for_timeout(1000)
+
+    return _complete_download_dialog(final_page, base_id)
+
+
+def download_meta_financiamento_seguro_report(context: BrowserContext, page: Page, base: dict) -> Path:
+    """Fluxo completo específico da base 'meta_financiamento_seguro'."""
+    final_page = open_resumo_parceiro(context, page, base)
+    apply_safra_mes_filter(final_page)
+    update_report_data(final_page)
+    return download_bloco_metas_spreadsheet(final_page, base["id"], base["secao_tabela"])
+
+
 def download_base(base: dict, headless: bool = True) -> Path:
     """Executa o fluxo completo de download para uma base configurada."""
     with sync_playwright() as p:
@@ -399,6 +526,8 @@ def download_base(base: dict, headless: bool = True) -> Path:
                 path = download_numero_contratos_report(context, page, base)
             elif base["id"] == "dias_sem_producao":
                 path = download_dias_sem_producao_report(context, page, base)
+            elif base["id"] == "meta_financiamento_seguro":
+                path = download_meta_financiamento_seguro_report(context, page, base)
             else:
                 navigate_menu(page, base["looker_path"])
                 open_bloco_if_needed(page, base.get("bloco"))

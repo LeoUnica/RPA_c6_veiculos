@@ -28,12 +28,12 @@ logger = logging.getLogger("data_processor")
 
 # TODO: confirmar o nome exato da coluna de data em cada base
 DATE_COLUMN_BY_BASE = {
-    "meta_financiamento_seguro": "Data",
     "numero_contratos": "Dt Relatório",
     "carteira_parceiros": None,  # essa base é substituição total, não usa data
-    # "dias_sem_producao" não usa esse mecanismo genérico - o mês é
-    # identificado pela coluna "Safra Mes" (formato AAAAMM), tratada em
-    # `_process_dias_sem_producao`.
+    # "dias_sem_producao" e "meta_financiamento_seguro" não usam esse
+    # mecanismo genérico - o mês é identificado por uma coluna própria
+    # (formato AAAAMM: "Safra Mes" / "Anomes Apuracao"), tratada em
+    # `_process_dias_sem_producao` / `_process_meta_financiamento_seguro`.
 }
 
 
@@ -322,6 +322,81 @@ def _process_dias_sem_producao(downloaded_path: Path, base: dict) -> Path:
     return origem_path
 
 
+CHAVE_UNICA_META_FINANCIAMENTO_SEGURO = ["Anomes Apuracao", "Filial"]
+
+
+def _process_meta_financiamento_seguro(downloaded_path: Path, base: dict) -> Path:
+    """
+    Fluxo específico da base "Meta Financiamento e Seguro":
+      1. Seleciona as colunas certas (essa base não tem filtro de status).
+      2. Salva o resultado tratado na pasta "Prévia" (sobrescrita a cada
+         execução - essa base roda 1x por mês, sem acúmulo entre execuções
+         como em Número de Contratos).
+      3. Remove da planilha de origem oficial os registros dos meses
+         presentes no arquivo baixado (identificados pela coluna "Anomes
+         Apuracao", formato AAAAMM) e cola os dados tratados no final,
+         preservando o histórico. Normalmente só um mês aparece no
+         download, mas na "janela curta" (virada de mês sem dia útil antes
+         do dia 01 - ver looker_automation.deve_usar_janela_curta_safra_mes)
+         o mês anterior também pode aparecer.
+
+    Cada ano tem seu próprio arquivo de origem (não subpasta, como em
+    Número de Contratos): "Meta Financiamento Seguro - {ano}.xlsx". Se o
+    download abranger mais de um ano (ex: janela curta na virada de
+    dezembro/janeiro), cada ano é roteado para o arquivo correto.
+    """
+    chave = CHAVE_UNICA_META_FINANCIAMENTO_SEGURO
+
+    df_tratado = pd.read_excel(downloaded_path)
+    df_tratado = _select_columns(df_tratado, None, base)
+
+    previa_path = config.caminho_previa_meta_financiamento_seguro()
+    previa_path.parent.mkdir(parents=True, exist_ok=True)
+    df_tratado.to_excel(previa_path, index=False)
+    if base["regras"].get("aplicar_autofiltro_excel"):
+        _apply_excel_autofilter(previa_path)
+    logger.info("Base '%s' tratada (prévia): %s (%d linhas)", base["nome"], previa_path, len(df_tratado))
+
+    anos_presentes = sorted(df_tratado["Anomes Apuracao"].astype(str).str[:4].unique())
+    origem_paths = []
+
+    for ano_str in anos_presentes:
+        ano = int(ano_str)
+        df_ano = df_tratado[df_tratado["Anomes Apuracao"].astype(str).str[:4] == ano_str]
+        meses_presentes = set(df_ano["Anomes Apuracao"])
+
+        origem_path = config.caminho_planilha_origem_meta_financiamento_seguro(ano)
+        origem_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if origem_path.exists():
+            df_origem = pd.read_excel(origem_path)
+            removidos = int(df_origem["Anomes Apuracao"].isin(meses_presentes).sum())
+            if removidos:
+                logger.info(
+                    "Removendo %d linhas dos meses %s na planilha de origem %s",
+                    removidos, sorted(meses_presentes), origem_path,
+                )
+            df_origem = df_origem[~df_origem["Anomes Apuracao"].isin(meses_presentes)]
+        else:
+            df_origem = pd.DataFrame(columns=df_ano.columns)
+
+        df_final = pd.concat([df_origem, df_ano], ignore_index=True)
+        # segurança extra contra duplicados, mantendo a versão mais recente baixada
+        df_final = df_final.drop_duplicates(subset=chave, keep="last")
+
+        df_final.to_excel(origem_path, index=False)
+        if base["regras"].get("aplicar_autofiltro_excel"):
+            _apply_excel_autofilter(origem_path)
+
+        logger.info(
+            "Planilha de origem atualizada: %s (+%d linhas, %d no total)",
+            origem_path, len(df_ano), len(df_final),
+        )
+        origem_paths.append(origem_path)
+
+    return origem_paths[-1]
+
+
 def process_base(downloaded_path: Path, base: dict) -> Path:
     """
     Pipeline completo para uma base: filtra linhas, funde com a base
@@ -348,6 +423,9 @@ def process_base(downloaded_path: Path, base: dict) -> Path:
 
     if modo == "planilha_origem_local_dias_sem_producao":
         return _process_dias_sem_producao(downloaded_path, base)
+
+    if modo == "planilha_origem_local_meta_financiamento_seguro":
+        return _process_meta_financiamento_seguro(downloaded_path, base)
 
     original_path = config.STAGING_DIR / f"{base['id']}_original.xlsx"
 

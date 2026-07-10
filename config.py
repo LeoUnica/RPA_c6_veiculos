@@ -93,6 +93,29 @@ def caminho_planilha_origem_dias_sem_producao() -> Path:
     """Caminho da planilha de origem oficial de Dias sem Produção."""
     return Path(PLANILHA_ORIGEM_DIAS_SEM_PRODUCAO_DIR) / "DIAS SEM PRODUCAO.xlsx"
 
+# Pasta "Prévia" e pasta raiz da planilha de origem oficial de "Meta
+# Financiamento e Seguro". Diferente de Número de Contratos, o ano fica no
+# NOME do arquivo (não em subpasta): "Meta Financiamento Seguro - {ano}.xlsx",
+# todos na mesma pasta.
+PREVIA_META_FINANCIAMENTO_SEGURO_DIR = os.getenv(
+    "PREVIA_META_FINANCIAMENTO_SEGURO_DIR",
+    r"C:\Users\leonardo.mudrik\Desktop\C6 Bank\Meta Financiamento e Seguro - Previa",
+)
+PLANILHA_ORIGEM_META_FINANCIAMENTO_SEGURO_DIR = os.getenv(
+    "PLANILHA_ORIGEM_META_FINANCIAMENTO_SEGURO_DIR",
+    r"C:\Users\leonardo.mudrik\Desktop\Setor Dados\Ana Price\Meta Financiamento e Seguro",
+)
+
+
+def caminho_previa_meta_financiamento_seguro() -> Path:
+    """Caminho do arquivo 'prévia' (tratado, antes do merge) de Meta Financiamento e Seguro."""
+    return Path(PREVIA_META_FINANCIAMENTO_SEGURO_DIR) / "Meta Financiamento e Seguro - Previa.xlsx"
+
+
+def caminho_planilha_origem_meta_financiamento_seguro(ano: int) -> Path:
+    """Caminho da planilha de origem oficial de Meta Financiamento e Seguro de um ano específico."""
+    return Path(PLANILHA_ORIGEM_META_FINANCIAMENTO_SEGURO_DIR) / f"Meta Financiamento Seguro - {ano}.xlsx"
+
 # --------------------------------------------------------------------------
 # Definição das 4 bases (extraído do material da equipe)
 # --------------------------------------------------------------------------
@@ -100,21 +123,33 @@ BASES = [
     {
         "id": "meta_financiamento_seguro",
         "nome": "Meta Financiamento e Seguro",
-        # Caminho de navegação dentro do Looker (menu -> menu -> relatório)
-        "looker_path": ["Auto", "Resumo Parceiro 2.0", "Veículos"],
-        "filtro_valor": "este_mes",              # "Is in this month"
-        "bloco": "Bloco de Metas - Por Filial",
+        # Caminho até abrir o painel "Auto" (Relatórios > Relatórios
+        # Gerenciais > Auto). A partir daí, clica no link "Resumo Apuração
+        # Parceiro 2.0" (dentro do card "Apuração Parceiro 2.0") - tratado
+        # à parte em looker_automation.py.
+        "looker_path": ["Relatórios", "Relatórios Gerenciais", "Auto"],
+        "link_relatorio": "Resumo Apuração Parceiro 2.0",
+        "secao_tabela": "Bloco de Metas - Por Filial",
         "pasta_sharepoint": "Meta Financiamento e Seguro",
-        "frequencia": "semanal",                 # 1x por semana
-        # regras de tratamento aplicadas em data_processor.py
+        "frequencia": "mensal",
         "regras": {
-            # As colunas a manter são descobertas automaticamente por
-            # alinhamento com a base original (ver data_processor.py).
-            # "remover_colunas" só é usado como fallback na 1ª execução,
-            # quando ainda não existe base original para comparar.
+            # Esta base não usa SharePoint: os dados tratados são salvos na
+            # pasta "Prévia" e depois mesclados com a planilha de origem
+            # oficial local, por ano (ver
+            # data_processor._process_meta_financiamento_seguro).
+            "modo": "planilha_origem_local_meta_financiamento_seguro",
+            # Colunas a manter na planilha baixada - o restante é excluído.
+            "colunas_manter": [
+                "Anomes Apuracao",
+                "Filial",
+                "R$ Meta",
+                "R$ Produção",
+                "R$ Meta Seguros",
+                "R$ Seguros",
+            ],
             "remover_colunas": [],
-            "filtro_status_proposta": None,       # não se aplica a essa base
-            "remover_mes_atual_antes_de_colar": True,
+            "filtro_status_proposta": None,
+            "aplicar_autofiltro_excel": True,
         },
     },
     {
