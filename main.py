@@ -29,7 +29,7 @@ logging.basicConfig(
 logger = logging.getLogger("main")
 
 
-def run_base(base: dict):
+def run_base(base: dict, headless: bool = True):
     logger.info("=== Iniciando base: %s ===", base["nome"])
     try:
         # Bases com planilha de origem local (Número de Contratos, Dias sem
@@ -48,7 +48,7 @@ def run_base(base: dict):
                 logger.warning("Não foi possível baixar a base original (pode ser a primeira execução).")
 
         # 2. Baixa o relatório novo do Looker
-        downloaded_path = looker_automation.download_base(base)
+        downloaded_path = looker_automation.download_base(base, headless=headless)
 
         # 3. Trata e mescla os dados
         final_path = data_processor.process_base(downloaded_path, base)
@@ -70,6 +70,7 @@ def main():
     group.add_argument("--all", action="store_true", help="roda todas as bases")
     group.add_argument("--frequencia", choices=["diaria", "semanal", "semanal_segunda", "mensal"],
                         help="roda todas as bases dessa frequência")
+    parser.add_argument("--debug", action="store_true", help="abre o navegador visível em vez de headless")
     args = parser.parse_args()
 
     if args.base:
@@ -80,7 +81,7 @@ def main():
         bases_to_run = [b for b in config.BASES if b["frequencia"] == args.frequencia]
 
     for base in bases_to_run:
-        run_base(base)
+        run_base(base, headless=not args.debug)
 
 
 if __name__ == "__main__":

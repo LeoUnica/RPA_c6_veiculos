@@ -14,12 +14,83 @@ from pathlib import Path
 
 import pandas as pd
 from openpyxl import load_workbook
+from openpyxl.styles import PatternFill
 
 import config
 
 logger = logging.getLogger("data_processor")
 
 DATE_COLUMN_NUMERO_CONTRATOS = "Dt Relatório"
+
+VERDE_LINHA_NOVA = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+AMARELO_LINHA_EDITADA = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
+
+
+def _chave_como_serie(df: pd.DataFrame, chave) -> pd.Series:
+    """Converte a(s) coluna(s) de `chave` numa série de valores comparáveis - uma
+    tupla por linha se `chave` for uma lista de colunas, ou a linha inteira
+    (como tupla) se `chave` for None.
+
+    Dois ajustes evitam falsos positivos ao comparar com a execução anterior:
+    - Colunas numéricas são arredondadas (6 casas decimais) - o Excel perde
+      um pouco de precisão de ponto flutuante ao salvar/reabrir um valor
+      (ex: 61653.33333333334 vira 61653.333333333336), o que faria uma linha
+      sem nenhuma mudança real parecer "editada".
+    - Células vazias (NaN) são trocadas por um marcador fixo, já que
+      `NaN != NaN` em Python faria uma linha inalterada (mas com alguma
+      célula vazia) ser sempre considerada "diferente" por engano.
+    """
+    if chave is None:
+        colunas = df
+    elif isinstance(chave, (list, tuple)):
+        colunas = df[list(chave)]
+    else:
+        return df[chave].fillna("__NaN__")
+    colunas = colunas.round(6).fillna("__NaN__")
+    return colunas.apply(tuple, axis=1)
+
+
+def _marcar_linhas_novas_e_editadas(path: Path, df: pd.DataFrame, chave, df_anterior: pd.DataFrame | None):
+    """Pinta, na planilha "Prévia" salva em `path`, de **verde** as linhas cuja
+    chave não existia na versão anterior da Prévia (linhas novas desta
+    compilação do RPA) e de **amarelo** as linhas cuja chave já existia mas
+    algum dado da linha mudou (linhas editadas) - para o usuário identificar
+    visualmente o que foi adicionado/alterado na execução do dia."""
+    if df.empty:
+        return
+
+    cols_chave = list(chave) if isinstance(chave, (list, tuple)) else ([chave] if chave is not None else [])
+    tem_anterior = (
+        df_anterior is not None
+        and not df_anterior.empty
+        and all(c in df_anterior.columns for c in cols_chave)
+    )
+    if tem_anterior:
+        chave_anterior_serie = _chave_como_serie(df_anterior, chave)
+        linha_anterior_serie = _chave_como_serie(df_anterior, None)
+        linha_anterior_por_chave = dict(zip(chave_anterior_serie, linha_anterior_serie))
+    else:
+        linha_anterior_por_chave = {}
+
+    chave_serie = _chave_como_serie(df, chave)
+    linha_atual_serie = _chave_como_serie(df, None)
+
+    wb = load_workbook(path)
+    ws = wb.active
+    mudou_algo = False
+    for offset, (k, linha_atual) in enumerate(zip(chave_serie, linha_atual_serie), start=2):  # linha 1 = cabeçalho
+        if k not in linha_anterior_por_chave:
+            fill = VERDE_LINHA_NOVA
+        elif linha_anterior_por_chave[k] != linha_atual:
+            fill = AMARELO_LINHA_EDITADA
+        else:
+            fill = None
+        if fill is not None:
+            mudou_algo = True
+            for cell in ws[offset]:
+                cell.fill = fill
+    if mudou_algo:
+        wb.save(path)
 
 
 def _current_month_mask(df: pd.DataFrame, date_col: str) -> pd.Series:
@@ -129,6 +200,7 @@ def _process_numero_contratos(downloaded_path: Path, base: dict) -> Path:
     df_previa.to_excel(previa_path, index=False)
     if base["regras"].get("aplicar_autofiltro_excel"):
         _apply_excel_autofilter(previa_path)
+    _marcar_linhas_novas_e_editadas(previa_path, df_previa, chave, df_previa_existente)
     logger.info("Prévia atualizada (sem duplicar '%s'): %s (%d linhas)", chave, previa_path, len(df_previa))
 
     # --- 2. Copia para a planilha de origem oficial só os contratos novos ---
@@ -185,9 +257,12 @@ def _process_dias_sem_producao(downloaded_path: Path, base: dict) -> Path:
 
     previa_path = config.caminho_previa_dias_sem_producao()
     previa_path.parent.mkdir(parents=True, exist_ok=True)
+    df_previa_anterior = pd.read_excel(previa_path) if previa_path.exists() else None
+
     df_tratado.to_excel(previa_path, index=False)
     if base["regras"].get("aplicar_autofiltro_excel"):
         _apply_excel_autofilter(previa_path)
+    _marcar_linhas_novas_e_editadas(previa_path, df_tratado, chave, df_previa_anterior)
     logger.info("Base '%s' tratada (prévia): %s (%d linhas)", base["nome"], previa_path, len(df_tratado))
 
     origem_path = config.caminho_planilha_origem_dias_sem_producao()
@@ -251,9 +326,12 @@ def _process_meta_financiamento_seguro(downloaded_path: Path, base: dict) -> Pat
 
     previa_path = config.caminho_previa_meta_financiamento_seguro()
     previa_path.parent.mkdir(parents=True, exist_ok=True)
+    df_previa_anterior = pd.read_excel(previa_path) if previa_path.exists() else None
+
     df_tratado.to_excel(previa_path, index=False)
     if base["regras"].get("aplicar_autofiltro_excel"):
         _apply_excel_autofilter(previa_path)
+    _marcar_linhas_novas_e_editadas(previa_path, df_tratado, chave, df_previa_anterior)
     logger.info("Base '%s' tratada (prévia): %s (%d linhas)", base["nome"], previa_path, len(df_tratado))
 
     anos_presentes = sorted(df_tratado["Anomes Apuracao"].astype(str).str[:4].unique())
@@ -296,6 +374,9 @@ def _process_meta_financiamento_seguro(downloaded_path: Path, base: dict) -> Pat
     return origem_paths[-1]
 
 
+CHAVE_UNICA_CARTEIRA_PARCEIROS = ["Cnpj Da Loja", "Filial", "Anomes"]
+
+
 def _process_carteira_parceiros(downloaded_path: Path, base: dict) -> Path:
     """
     Fluxo específico da base "Carteira e Parceiros":
@@ -323,9 +404,12 @@ def _process_carteira_parceiros(downloaded_path: Path, base: dict) -> Path:
 
     previa_path = config.caminho_previa_carteira_parceiros()
     previa_path.parent.mkdir(parents=True, exist_ok=True)
+    df_previa_anterior = pd.read_excel(previa_path) if previa_path.exists() else None
+
     df_tratado.to_excel(previa_path, index=False)
     if base["regras"].get("aplicar_autofiltro_excel"):
         _apply_excel_autofilter(previa_path)
+    _marcar_linhas_novas_e_editadas(previa_path, df_tratado, CHAVE_UNICA_CARTEIRA_PARCEIROS, df_previa_anterior)
     logger.info("Prévia substituída: %s (%d linhas)", previa_path, len(df_tratado))
 
     ano = date.today().year

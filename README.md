@@ -96,9 +96,13 @@ python main.py --frequencia semanal
 
 ## ⚠️ Status Atual
 
-- ✅ Lógica de tratamento de dados (`data_processor.py`) implementada e testada
-- ⚠️ Seletores do Playwright em `looker_automation.py` são um esqueleto —
-  precisam ser ajustados com `playwright codegen` olhando o Looker real
-- ⚠️ Integração com SharePoint requer configuração de App Registration no
-  Azure AD antes do primeiro uso
+- ✅ As 4 bases (Número de Contratos, Dias sem Produção, Meta Financiamento e
+  Seguro, Carteira e Parceiros) estão implementadas com fluxo dedicado em
+  `looker_automation.py` e `data_processor.py`, validadas contra o portal e
+  as planilhas reais.
+- ⚠️ `sharepoint_sync.py` não é usado por nenhuma base atualmente (todas
+  usam planilha de origem local) - mantido no repositório, mas não requer
+  configuração de Azure AD para rodar o projeto.
+
+Para instalar e rodar este projeto em outro computador, ver [SETUP.md](SETUP.md).
 
