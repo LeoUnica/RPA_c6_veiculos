@@ -94,7 +94,7 @@ python main.py --frequencia semanal
 | Dias sem Produção | Semanal (segundas) | Este mês |
 | Carteira e Parceiros | Diária | Este ano |
 
-## ⚠️ Status Atual
+## Status Atual
 
 - ✅ As 4 bases (Número de Contratos, Dias sem Produção, Meta Financiamento e
   Seguro, Carteira e Parceiros) estão implementadas com fluxo dedicado em
