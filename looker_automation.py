@@ -101,6 +101,7 @@ def open_acompanhamento_veiculos_analitico(context: BrowserContext, page: Page) 
     with context.expect_page(timeout=10000) as popup_info2:
         link_acompanhamento.click(force=True)
     final_page = popup_info2.value
+    catalogo.close()
 
     # O dashboard final faz polling contínuo em segundo plano, então
     # "networkidle" nunca conclui aqui - usamos espera fixa.
@@ -249,7 +250,9 @@ def download_numero_contratos_report(context: BrowserContext, page: Page, base: 
     final_page = open_acompanhamento_veiculos_analitico(context, page)
     apply_analitico_filters(final_page, base["filtros"])
     update_report_data(final_page)
-    return download_analitico_spreadsheet(final_page, base["id"])
+    path = download_analitico_spreadsheet(final_page, base["id"])
+    final_page.close()
+    return path
 
 
 # --------------------------------------------------------------------------
@@ -284,6 +287,7 @@ def open_sla_analitico(context: BrowserContext, page: Page, base: dict) -> Page:
     with context.expect_page(timeout=10000) as popup_info2:
         link.click(force=True)
     final_page = popup_info2.value
+    catalogo.close()
 
     final_page.wait_for_load_state("domcontentloaded", timeout=20000)
     final_page.wait_for_timeout(8000)
@@ -320,7 +324,7 @@ def download_sla_analitico_spreadsheet(final_page: Page, base_id: str) -> Path:
     própria coluna da tabela funciona como ponto de referência correto.
     """
     referencia = final_page.get_by_text("Cnpj Da Loja", exact=True).first
-    referencia.scroll_into_view_if_needed()
+    referencia.scroll_into_view_if_needed(timeout=90000)
     final_page.wait_for_timeout(1000)
 
     tile_button = _find_tile_actions_button(final_page, referencia)
@@ -337,7 +341,9 @@ def download_dias_sem_producao_report(context: BrowserContext, page: Page, base:
     final_page = open_sla_analitico(context, page, base)
     verify_referencia_month_filter(final_page)
     update_report_data(final_page)
-    return download_sla_analitico_spreadsheet(final_page, base["id"])
+    path = download_sla_analitico_spreadsheet(final_page, base["id"])
+    final_page.close()
+    return path
 
 
 # --------------------------------------------------------------------------
@@ -395,6 +401,7 @@ def open_resumo_parceiro(context: BrowserContext, page: Page, base: dict) -> Pag
     with context.expect_page(timeout=10000) as popup_info2:
         link.click(force=True)
     final_page = popup_info2.value
+    catalogo.close()
 
     final_page.wait_for_load_state("domcontentloaded", timeout=20000)
     final_page.wait_for_timeout(8000)
@@ -462,7 +469,9 @@ def download_meta_financiamento_seguro_report(context: BrowserContext, page: Pag
     final_page = open_resumo_parceiro(context, page, base)
     apply_safra_mes_filter(final_page)
     update_report_data(final_page)
-    return download_bloco_metas_spreadsheet(final_page, base["id"], base["secao_tabela"])
+    path = download_bloco_metas_spreadsheet(final_page, base["id"], base["secao_tabela"])
+    final_page.close()
+    return path
 
 
 # --------------------------------------------------------------------------
@@ -497,6 +506,7 @@ def open_painel_carteira(context: BrowserContext, page: Page, base: dict) -> Pag
     with context.expect_page(timeout=10000) as popup_info2:
         link.click(force=True)
     final_page = popup_info2.value
+    catalogo.close()
 
     final_page.wait_for_load_state("domcontentloaded", timeout=20000)
     final_page.wait_for_timeout(8000)
@@ -531,10 +541,12 @@ def download_carteira_spreadsheet(final_page: Page, base_id: str) -> Path:
     Localiza o botão "Tile actions" da tabela usando o cabeçalho de coluna
     "Cnpj Da Loja" como referência (esse relatório não tem uma faixa de
     título separada acima da tabela, mesma situação de Dias sem Produção).
-    O timeout de download é maior (120s) porque baixa o ano inteiro.
+    O timeout de download é maior (240s) porque baixa o ano inteiro - em
+    teste real o Looker levou entre 120s e 180s para gerar o arquivo, então
+    120s (usado antes) não é margem suficiente.
     """
     referencia = final_page.get_by_text("Cnpj Da Loja", exact=True).first
-    referencia.scroll_into_view_if_needed()
+    referencia.scroll_into_view_if_needed(timeout=90000)
     final_page.wait_for_timeout(1000)
 
     tile_button = _find_tile_actions_button(final_page, referencia)
@@ -543,7 +555,7 @@ def download_carteira_spreadsheet(final_page: Page, base_id: str) -> Path:
     tile_button.click(force=True)
     final_page.wait_for_timeout(1000)
 
-    return _complete_download_dialog(final_page, base_id, download_timeout_ms=120000)
+    return _complete_download_dialog(final_page, base_id, download_timeout_ms=240000)
 
 
 def download_carteira_parceiros_report(context: BrowserContext, page: Page, base: dict) -> Path:
@@ -551,11 +563,39 @@ def download_carteira_parceiros_report(context: BrowserContext, page: Page, base
     final_page = open_painel_carteira(context, page, base)
     apply_referencia_year_filter(final_page)
     update_report_data(final_page)
-    return download_carteira_spreadsheet(final_page, base["id"])
+    path = download_carteira_spreadsheet(final_page, base["id"])
+    final_page.close()
+    return path
 
 
-def download_base(base: dict, headless: bool = True) -> Path:
-    """Executa o fluxo completo de download para uma base configurada."""
+def _download_single_base(context: BrowserContext, page: Page, base: dict) -> Path:
+    """Despacha para o fluxo dedicado de download de uma base, assumindo que
+    `page` já está logada no portal."""
+    if base["id"] == "numero_contratos":
+        return download_numero_contratos_report(context, page, base)
+    elif base["id"] == "dias_sem_producao":
+        return download_dias_sem_producao_report(context, page, base)
+    elif base["id"] == "meta_financiamento_seguro":
+        return download_meta_financiamento_seguro_report(context, page, base)
+    elif base["id"] == "carteira_parceiros":
+        return download_carteira_parceiros_report(context, page, base)
+    else:
+        raise ValueError(f"Base '{base['id']}' não tem fluxo de download implementado")
+
+
+def download_bases(bases: list[dict], headless: bool = True) -> dict[str, Path]:
+    """
+    Executa o fluxo completo de download para uma ou mais bases fazendo
+    **um único login** no portal - não há motivo para sair da conta e
+    entrar de novo entre uma base e outra, já que cada fluxo de download
+    sempre parte da mesma página inicial (`page`, a aba do WebAutorizador
+    logada) para abrir seu próprio caminho de pop-ups no menu Relatórios.
+
+    Retorna um dict {base_id: caminho_do_arquivo_baixado} só com as bases
+    que baixaram com sucesso - falha em uma base é logada e não impede as
+    demais de serem tentadas na mesma sessão.
+    """
+    resultados: dict[str, Path] = {}
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=headless)
         context = browser.new_context(accept_downloads=True)
@@ -563,22 +603,24 @@ def download_base(base: dict, headless: bool = True) -> Path:
 
         try:
             login(page)
-
-            if base["id"] == "numero_contratos":
-                path = download_numero_contratos_report(context, page, base)
-            elif base["id"] == "dias_sem_producao":
-                path = download_dias_sem_producao_report(context, page, base)
-            elif base["id"] == "meta_financiamento_seguro":
-                path = download_meta_financiamento_seguro_report(context, page, base)
-            elif base["id"] == "carteira_parceiros":
-                path = download_carteira_parceiros_report(context, page, base)
-            else:
-                raise ValueError(f"Base '{base['id']}' não tem fluxo de download implementado")
+            for base in bases:
+                try:
+                    resultados[base["id"]] = _download_single_base(context, page, base)
+                except Exception:
+                    logger.exception("Falha ao baixar a base '%s' do Looker", base["nome"])
         finally:
             context.close()
             browser.close()
 
-    return path
+    return resultados
+
+
+def download_base(base: dict, headless: bool = True) -> Path:
+    """Atalho para baixar uma única base (usado pelo CLI deste módulo)."""
+    resultados = download_bases([base], headless=headless)
+    if base["id"] not in resultados:
+        raise RuntimeError(f"Falha ao baixar a base '{base['id']}' - ver log acima para o erro original")
+    return resultados[base["id"]]
 
 
 if __name__ == "__main__":
