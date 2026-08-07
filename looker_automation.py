@@ -604,6 +604,20 @@ def download_bases(bases: list[dict], headless: bool = True) -> dict[str, Path]:
         try:
             login(page)
             for base in bases:
+                if page.is_closed():
+                    # A aba principal (WebAutorizador logado) foi fechada de forma
+                    # inesperada (ex: crash do navegador) - sem ela, nenhuma base
+                    # restante consegue nem começar a navegar. Para aqui em vez de
+                    # deixar cada uma falhar com um erro confuso e repetitivo.
+                    restantes = ", ".join(b["nome"] for b in bases[bases.index(base):])
+                    logger.error(
+                        "Sessão do portal perdida (aba principal fechada inesperadamente) - "
+                        "pulando as bases restantes desta execução: %s",
+                        restantes,
+                    )
+                    break
+
+                paginas_antes = set(context.pages)
                 try:
                     resultados[base["id"]] = _download_single_base(context, page, base)
                 except Exception:
@@ -619,6 +633,19 @@ def download_bases(bases: list[dict], headless: bool = True) -> dict[str, Path]:
                             "carregamento no portal. A base foi pulada nesta execução; "
                             "as demais bases não são afetadas."
                         )
+                finally:
+                    # Se a base falhou antes de chegar no `final_page.close()` do
+                    # seu próprio fluxo, a aba/pop-up daquele relatório fica aberta
+                    # e "suja" a sessão para a próxima base (foi o que causava a
+                    # Carteira e Parceiros falhar logo depois do SLA falhar, já que
+                    # ela vem em seguida em config.BASES). Fecha qualquer aba nova
+                    # que ainda esteja aberta, com sucesso ou falha.
+                    for pagina in context.pages:
+                        if pagina not in paginas_antes and pagina is not page and not pagina.is_closed():
+                            try:
+                                pagina.close()
+                            except Exception:
+                                pass
         finally:
             context.close()
             browser.close()
