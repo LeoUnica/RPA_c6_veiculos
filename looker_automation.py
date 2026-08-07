@@ -608,6 +608,17 @@ def download_bases(bases: list[dict], headless: bool = True) -> dict[str, Path]:
                     resultados[base["id"]] = _download_single_base(context, page, base)
                 except Exception:
                     logger.exception("Falha ao baixar a base '%s' do Looker", base["nome"])
+                    if base["id"] == "dias_sem_producao":
+                        # Falha conhecida (ver GUIA_TIME_DADOS.md secao 10) - reforçar
+                        # aqui para quem for ler o log não interpretar como "não há
+                        # dados para o período": é um problema técnico de navegação/
+                        # carregamento da página no portal, não ausência de informação.
+                        logger.warning(
+                            "A base 'Dias sem Produção' (SLA) NÃO falhou por falta de "
+                            "dados - é um problema técnico já conhecido de navegação/"
+                            "carregamento no portal. A base foi pulada nesta execução; "
+                            "as demais bases não são afetadas."
+                        )
         finally:
             context.close()
             browser.close()

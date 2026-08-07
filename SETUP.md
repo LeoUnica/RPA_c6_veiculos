@@ -179,8 +179,15 @@ Repetir para `--frequencia semanal_segunda` (só às segundas) e
 
 - **Arquivo de destino aberto:** ver seção 6 - fechar antes de rodar.
 - **Timeout de download:** o download de cada relatório pode demorar
-  (relatórios grandes); o timeout interno já está configurado para 60s,
-  normalmente não precisa mexer.
+  (relatórios grandes); o timeout interno já está ajustado por base em
+  `looker_automation.py` (a maioria em 60s, Carteira e Parceiros em 240s
+  por baixar o ano inteiro), normalmente não precisa mexer.
+- **Login único por execução:** `main.py` loga uma única vez no portal e
+  reaproveita essa sessão para todas as bases de um `--all`/`--frequencia`
+  - não é preciso configurar nada extra para isso funcionar. Se uma base
+  falhar na navegação (ex: a base "Dias sem Produção" tem apresentado
+  falha intermitente conhecida), o erro é logado e as demais bases
+  continuam normalmente.
 - **Sessão já ativa:** se o usuário do Looker já estiver logado em outro
   lugar, o portal mostra um `confirm()` perguntando se quer continuar - o
   código já aceita esse diálogo automaticamente (`page.on("dialog", ...)`),

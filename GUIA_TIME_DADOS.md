@@ -67,15 +67,22 @@ adicionar uma base nova, normalmente só se mexe aqui e em
 
 ### `looker_automation.py`
 
-Um `download_base(base)` genérico que faz login e despacha para uma
-função `download_<base>_report` específica de cada base (cada uma abre o
-card certo, aplica filtros próprios e baixa a planilha). O Looker é
-carregado dentro de popups (`context.expect_page()`), os menus usam hover
-antes de clicar, e vários elementos vêm com emoji no texto - ver os
-comentários no início de cada função para o motivo de cada `.hover()`,
-`.nth(1)`, etc. Se o Looker mudar de layout, é aqui que os seletores
-quebram e precisam ser reconferidos (a extensão "Playwright Test for
-VSCode", citada na seção 7, ajuda a inspecionar isso).
+`download_bases(bases)` faz **um único login** e despacha, para cada base
+da lista, uma função `download_<base>_report` específica (cada uma abre o
+card certo, aplica filtros próprios e baixa a planilha) - não é preciso
+sair e entrar de novo no portal a cada procedimento. Se uma base falhar
+(exceção durante a navegação/download), o erro é logado e as próximas
+bases da lista continuam normalmente na mesma sessão/login (ver seção 10 -
+é o caso hoje da base "Dias sem Produção"). `download_base(base)` é só um
+atalho para baixar uma única base, usado pelo CLI deste módulo
+(`python looker_automation.py --base ... --debug`).
+
+O Looker é carregado dentro de popups (`context.expect_page()`), os menus
+usam hover antes de clicar, e vários elementos vêm com emoji no texto -
+ver os comentários no início de cada função para o motivo de cada
+`.hover()`, `.nth(1)`, etc. Se o Looker mudar de layout, é aqui que os
+seletores quebram e precisam ser reconferidos (a extensão "Playwright Test
+for VSCode", citada na seção 7, ajuda a inspecionar isso).
 
 ### `data_processor.py`
 
@@ -103,11 +110,14 @@ python main.py --all                        # as 4 de uma vez
 python main.py --frequencia diaria          # usado no agendamento (Task Scheduler)
 ```
 
-Para cada base, chama nessa ordem: `looker_automation.download_base` →
-`data_processor.process_base`. Se uma base falhar, a exceção sobe e
-**interrompe as próximas bases** no mesmo `--all`/`--frequencia` (não há
-"pular e continuar" hoje) - o motivo mais comum de falha é a planilha de
-destino estar aberta no Excel (ver seção 10).
+`run_bases(bases)` faz, nessa ordem: (1) baixa do Looker todas as bases da
+lista com **um único login** (`looker_automation.download_bases`), (2)
+trata e mescla cada arquivo baixado com sucesso (`data_processor.process_base`).
+Se uma base falhar - no login/navegação (etapa 1) ou no tratamento (etapa
+2) - o erro é logado e **as demais bases continuam normalmente** no mesmo
+`--all`/`--frequencia` (não interrompe mais a execução inteira). O motivo
+mais comum de falha na etapa 2 é a planilha de destino estar aberta no
+Excel (ver seção 10).
 
 ## 3. Pré-requisitos
 
@@ -300,14 +310,30 @@ origem oficial não é colorida.
 - **Arquivo de destino aberto:** ver seção 8 - fechar antes de rodar.
 - **Timeout de download:** relatórios grandes podem demorar; o timeout já
   está ajustado por base em `looker_automation.py` (a maioria em 60s,
-  Carteira e Parceiros em 120s por baixar o ano inteiro). Um timeout
+  Carteira e Parceiros em 240s por baixar o ano inteiro - em teste real o
+  Looker levou entre 120s e 180s para gerar esse arquivo). Um timeout
   esporádico geralmente é só lentidão do portal - rodar de novo resolve.
 - **Sessão já ativa:** se o usuário já estiver logado em outro lugar, o
   portal mostra um `confirm()` perguntando se quer continuar - o código já
   aceita esse diálogo sozinho, não precisa de ação manual.
-- **`--all`/`--frequencia` para no meio:** se uma base falhar (ex:
-  arquivo aberto), as bases seguintes daquela chamada não rodam. Rode a
-  base que faltou individualmente depois de corrigir o problema.
+- **Dias sem Produção (SLA) falhando na navegação:** essa base tem
+  apresentado timeout esperando a tabela ("Cnpj Da Loja") carregar depois
+  do Update, com a página chegando a fechar sozinha em alguns casos. Ainda
+  não foi encontrada a causa raiz (pode ser lentidão específica desse
+  dashboard no Looker). **Importante: essa falha é técnica (navegação/
+  carregamento da página), não significa que não há dados disponíveis
+  para o período** - o log já imprime um aviso explícito nesse sentido
+  quando acontece (ver `looker_automation.download_bases`). Por ora, o
+  comportamento aceito é deixar tentar normalmente: quando falha, o erro é
+  logado e as outras 3 bases rodam sem problema (ver próximo item). Se for
+  investigar, `looker_automation.py` tem as funções
+  `open_sla_analitico`/`download_sla_analitico_spreadsheet` dedicadas a
+  essa base.
+- **`--all`/`--frequencia` não para mais no meio:** se uma base falhar
+  (ex: arquivo aberto, ou o problema do SLA acima), o erro é logado e as
+  bases seguintes daquela chamada continuam normalmente - não é mais
+  preciso rodar a que faltou separadamente, mas vale conferir o log
+  (`logs/rpa.log`) para saber se algo precisa de atenção manual.
 
 ## 11. Como adicionar uma base nova
 
