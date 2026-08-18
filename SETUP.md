@@ -64,7 +64,7 @@ LOOKER_PASSWORD=<senha_do_portal>
 
 As variáveis `SHAREPOINT_*` no `.env.example` **não precisam ser
 preenchidas** - o `sharepoint_sync.py` existe no repositório mas não é usado
-por nenhuma das 4 bases atuais (todas usam planilha local, ver seção 5).
+por nenhuma das 5 bases atuais (todas usam planilha local, ver seção 5).
 
 O `.env` nunca é commitado (está no `.gitignore`) - cada computador tem o seu
 próprio.
@@ -100,7 +100,13 @@ PLANILHA_ORIGEM_META_FINANCIAMENTO_SEGURO_DIR=...
 
 PREVIA_CARTEIRA_PARCEIROS_DIR=...
 PLANILHA_ORIGEM_CARTEIRA_PARCEIROS_DIR=...
+
+PREVIA_COMISSAO_A_VISTA_DIR=...
 ```
+
+A 5ª base (Comissão à Vista - Analítico) só tem 1 variável, não 2 - ela não
+tem planilha de origem oficial separada, a "Prévia" já é o destino final
+(acumulado indefinidamente, ver README.md/GUIA_TIME_DADOS.md seção 1.1).
 
 **Opção B:** editar diretamente os valores padrão em `config.py` (menos
 recomendado, pois não é tão fácil versionar por computador).
@@ -110,12 +116,13 @@ arquivo/pasta dentro do diretório configurado (o código cria a pasta e o
 arquivo sozinho se não existirem - não é preciso criar nada manualmente,
 apenas apontar para onde os arquivos devem ficar):
 
-| Base | Prévia (sempre sobrescrita) | Planilha de origem oficial |
+| Base | Prévia | Planilha de origem oficial |
 |---|---|---|
-| Número de Contratos | `Número de Contratos - Previa.xlsx` | `<pasta>\Numero de Contratos - {ano}\Digitação Analítico - {ano}.xlsx` (uma subpasta por ano) |
-| Dias sem Produção | `Dias sem produção - Previa.xlsx` | `<pasta>\DIAS SEM PRODUCAO.xlsx` (arquivo único, sem separação por ano) |
-| Meta Financiamento e Seguro | `Meta Financiamento e Seguro - Previa.xlsx` | `<pasta>\Meta Financiamento Seguro - {ano}.xlsx` (um arquivo por ano, na mesma pasta) |
-| Carteira e Parceiros | `Carteira de parceiros e filiais - Previa.xlsx` | `<pasta>\CARTEIRA- {ano}.xlsx` (um arquivo por ano, na mesma pasta) |
+| Número de Contratos | `Número de Contratos - Previa.xlsx` (sempre sobrescrita) | `<pasta>\Numero de Contratos - {ano}\Digitação Analítico - {ano}.xlsx` (uma subpasta por ano) |
+| Dias sem Produção | `Dias sem produção - Previa.xlsx` (sempre sobrescrita) | `<pasta>\DIAS SEM PRODUCAO.xlsx` (arquivo único, sem separação por ano) |
+| Meta Financiamento e Seguro | `Meta Financiamento e Seguro - Previa.xlsx` (sempre sobrescrita) | `<pasta>\Meta Financiamento Seguro - {ano}.xlsx` (um arquivo por ano, na mesma pasta) |
+| Carteira e Parceiros | `Carteira de parceiros e filiais - Previa.xlsx` (sempre sobrescrita) | `<pasta>\CARTEIRA- {ano}.xlsx` (um arquivo por ano, na mesma pasta) |
+| Comissão à Vista - Analítico | `Comissão à Vista - Analitico - Previa.xlsx` (**acumulada**, nunca sobrescrita - só recebe linhas novas) | `<pasta>\Comissão A Vista - Analitico.xlsx` (**acumulada**, arquivo único sem separação por ano) |
 
 Se a planilha de origem oficial de um ano ainda não existir, a primeira
 execução cria o arquivo do zero (para Número de Contratos e Dias sem
@@ -128,7 +135,7 @@ ano inteiro disponível no Looker no momento).
 venv\Scripts\activate
 
 # uma base específica (ids: numero_contratos, dias_sem_producao,
-# meta_financiamento_seguro, carteira_parceiros)
+# meta_financiamento_seguro, carteira_parceiros, comissao_a_vista)
 python main.py --base numero_contratos
 
 # todas as bases de uma vez
@@ -164,6 +171,7 @@ Cada base tem uma frequência já definida em `config.py` (`"frequencia"`):
 | Dias sem Produção | semanal (segundas-feiras) |
 | Meta Financiamento e Seguro | mensal |
 | Carteira e Parceiros | diária |
+| Comissão à Vista - Analítico | mensal |
 
 No Task Scheduler, criar uma tarefa por frequência, apontando para o
 Python do `venv` e passando o argumento correspondente, por exemplo:
@@ -185,9 +193,11 @@ Repetir para `--frequencia semanal_segunda` (só às segundas) e
 - **Login único por execução:** `main.py` loga uma única vez no portal e
   reaproveita essa sessão para todas as bases de um `--all`/`--frequencia`
   - não é preciso configurar nada extra para isso funcionar. Se uma base
-  falhar na navegação (ex: a base "Dias sem Produção" tem apresentado
-  falha intermitente conhecida), o erro é logado e as demais bases
-  continuam normalmente.
+  falhar na navegação, ela tenta de novo automaticamente (reabrindo do
+  zero) até `looker_automation.MAX_TENTATIVAS_POR_BASE` (2) vezes antes de
+  ser considerada pulada, e as demais bases continuam normalmente. A base
+  "Dias sem Produção" tem uma falha intermitente conhecida, então esse
+  retry é especialmente útil para ela.
 - **Sessão já ativa:** se o usuário do Looker já estiver logado em outro
   lugar, o portal mostra um `confirm()` perguntando se quer continuar - o
   código já aceita esse diálogo automaticamente (`page.on("dialog", ...)`),
@@ -200,6 +210,10 @@ Repetir para `--frequencia semanal_segunda` (só às segundas) e
   Seguro" para calcular dias úteis (feriados de Brasil + Minas Gerais) na
   regra de virada de mês - não precisa de nenhuma configuração adicional,
   já vem com os feriados embutidos na biblioteca.
+- **Comissão à Vista - Analítico (5ª base):** duas planilhas locais, cada
+  uma só recebendo linhas novas (nunca reescritas) - ver detalhes e os
+  bugs reais já corrigidos (linha de totais, nomes de coluna com espaço)
+  em GUIA_TIME_DADOS.md seção 1.1.
 
 ## 9. Editor / extensões recomendadas (VS Code)
 

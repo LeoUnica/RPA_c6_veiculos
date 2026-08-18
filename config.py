@@ -9,11 +9,25 @@ lista - nenhum outro arquivo precisa ser alterado.
 """
 
 import os
+from datetime import date
 from pathlib import Path
 
 from dotenv import load_dotenv
 
 load_dotenv()
+
+
+def periodo_referencia_atual() -> tuple[int, int]:
+    """(ano, mês) atuais - período de referência "corrente" usado por
+    padrão por todas as bases mensais/de mês corrente (Comissão à Vista,
+    Meta Financiamento e Seguro, Dias sem Produção, Carteira e Parceiros, e
+    a janela de mês atual de Número de Contratos). Centralizado aqui para
+    todas as bases usarem exatamente a mesma noção de "mês atual" - em
+    especial, é o que garante que "Comissão à Vista" sempre use o mesmo
+    mês/ano que "Número de Contratos" (relatório "Analítico") usa em cada
+    execução, sem cada uma calcular isso de um jeito próprio."""
+    hoje = date.today()
+    return hoje.year, hoje.month
 
 # --------------------------------------------------------------------------
 # Pastas locais de trabalho (staging antes de subir pro SharePoint)
@@ -138,8 +152,39 @@ def caminho_planilha_origem_carteira_parceiros(ano: int) -> Path:
     """Caminho da planilha de origem oficial de Carteira e Parceiros de um ano específico."""
     return Path(PLANILHA_ORIGEM_CARTEIRA_PARCEIROS_DIR) / f"CARTEIRA- {ano}.xlsx"
 
+# Pasta "Prévia" de "Comissão à Vista - Analítico" - acumulada
+# indefinidamente entre execuções (nunca sobrescrita, só recebe linhas
+# novas - ver data_processor._process_comissao_a_vista), igual à planilha
+# de origem oficial logo abaixo (as duas usam a mesma lógica de acúmulo,
+# só ficam em pastas/arquivos diferentes).
+PREVIA_COMISSAO_A_VISTA_DIR = os.getenv(
+    "PREVIA_COMISSAO_A_VISTA_DIR",
+    r"C:\Users\leonardo.mudrik\Desktop\C6 Bank\Comissão à Vista - Analitico - Previa",
+)
+
+
+def caminho_previa_comissao_a_vista() -> Path:
+    """Caminho da planilha (única, acumulativa) de Comissão à Vista - Analítico."""
+    return Path(PREVIA_COMISSAO_A_VISTA_DIR) / "Comissão à Vista - Analitico - Previa.xlsx"
+
+# Planilha de origem oficial de "Comissão à Vista - Analítico" - diferente
+# das outras 3 (Dias sem Produção, Meta Financiamento e Seguro, Carteira e
+# Parceiros), não é organizada por ano: é um único arquivo acumulando tudo
+# (mesmo padrão de Dias sem Produção), que já vinha sendo mantido pelo time
+# com dados de meses anteriores antes desta base existir no RPA - nome de
+# arquivo confirmado no computador em 17/08/2026.
+PLANILHA_ORIGEM_COMISSAO_A_VISTA_DIR = os.getenv(
+    "PLANILHA_ORIGEM_COMISSAO_A_VISTA_DIR",
+    r"C:\Users\leonardo.mudrik\Desktop\Setor Dados\Ana Price\Comissao à Vista",
+)
+
+
+def caminho_planilha_origem_comissao_a_vista() -> Path:
+    """Caminho da planilha de origem oficial (única, sem separação por ano) de Comissão à Vista - Analítico."""
+    return Path(PLANILHA_ORIGEM_COMISSAO_A_VISTA_DIR) / "Comissão A Vista - Analitico.xlsx"
+
 # --------------------------------------------------------------------------
-# Definição das 4 bases (extraído do material da equipe)
+# Definição das 5 bases (extraído do material da equipe)
 # --------------------------------------------------------------------------
 BASES = [
     {
@@ -276,6 +321,54 @@ BASES = [
             "modo": "planilha_origem_local_carteira_parceiros",
             "remover_colunas": [],
             "filtro_status_proposta": None,
+        },
+    },
+    {
+        "id": "comissao_a_vista",
+        "nome": "Comissão à Vista - Analítico",
+        # Caminho até abrir o painel "Auto" (Relatórios > Relatórios
+        # Gerenciais > One Page - Operacional > Auto). A partir daí, clica
+        # no link "Apuração Comissão À Vista" (dentro do card "Apuração
+        # Parceiro 2.0" - o MESMO card de Meta Financiamento e Seguro, mas
+        # um link diferente dentro dele) - tratado à parte em
+        # looker_automation.py. Texto confirmado ao vivo pelo usuário em
+        # 17/08/2026 (o "À" vem maiúsculo no portal - a 1ª tentativa desta
+        # base usava "à" minúsculo e o `exact=True` fazia o Playwright
+        # nunca achar o link, com timeout de 30s).
+        "looker_path": ["Relatórios", "Relatórios Gerenciais", "Auto"],
+        "link_relatorio": "Apuração Comissão À Vista",
+        # Texto de referência (faixa de título acima da tabela) usado para
+        # achar o botão "Tile actions" na hora do download - confirmado ao
+        # vivo pelo usuário em 17/08/2026 (mesmo padrão de "Analítico" em
+        # Número de Contratos - ver
+        # looker_automation.download_comissao_a_vista_spreadsheet).
+        "secao_tabela": "Analítico",
+        "pasta_sharepoint": "Comissão à Vista - Analítico",
+        "frequencia": "mensal",
+        "regras": {
+            # Esta base não usa SharePoint - dados vão direto pra Prévia e
+            # pra planilha de origem oficial locais (ver
+            # data_processor._process_comissao_a_vista). Diferente das
+            # outras 3 bases nesse modo, nenhuma das duas planilhas é
+            # reescrita/tem período removido a cada execução: as duas só
+            # RECEBEM linhas novas no final (nunca sobrescritas) - a
+            # planilha de origem oficial já vinha sendo mantida pelo time
+            # com dados de meses anteriores antes desta base existir aqui.
+            "modo": "planilha_origem_local_comissao_a_vista",
+            "remover_colunas": [],
+            "filtro_status_proposta": None,
+            "aplicar_autofiltro_excel": True,
+            # Chave composta usada para identificar registros já existentes
+            # e evitar duplicação ao acumular (ver
+            # data_processor._process_comissao_a_vista). Confirmada contra
+            # um download real e contra a planilha de origem oficial
+            # (que já tinha 6 meses de histórico) em 17/08/2026: "Cd
+            # Contrato" sozinho tem 1 duplicata real na planilha de origem
+            # (o mesmo contrato reajustado num mês seguinte) - "Anomes
+            # Apuracao" junto elimina essa duplicata (0 com a chave
+            # composta), mesmo padrão de entidade+período das outras
+            # bases (ex: CHAVE_UNICA_CARTEIRA_PARCEIROS).
+            "chave_comparacao": ["Cd Contrato", "Anomes Apuracao"],
         },
     },
 ]

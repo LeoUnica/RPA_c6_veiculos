@@ -31,9 +31,9 @@ logger = logging.getLogger("main")
 
 def _usa_sharepoint(base: dict) -> bool:
     # Bases com planilha de origem local (Número de Contratos, Dias sem
-    # Produção, Meta Financiamento e Seguro, Carteira e Parceiros) não usam
-    # SharePoint: os dados vão direto para o arquivo local (ver
-    # data_processor._process_*).
+    # Produção, Meta Financiamento e Seguro, Carteira e Parceiros, Comissão
+    # à Vista) não usam SharePoint: os dados vão direto para o arquivo
+    # local (ver data_processor._process_*).
     modo = base["regras"].get("modo") or ""
     return not modo.startswith("planilha_origem_local")
 
@@ -65,6 +65,11 @@ def run_bases(bases: list[dict], headless: bool = True):
         downloaded_path = downloaded_paths.get(base["id"])
         if downloaded_path is None:
             logger.error("Base '%s' pulada: download do Looker falhou (ver erro acima).", base["nome"])
+            # Registra no histórico mesmo sem ter baixado nada, para não
+            # parecer que a base simplesmente não rodou - "linhas baixadas"
+            # None (em vez de 0) distingue "falha técnica" de "sem dados no
+            # período" (ver data_processor.registrar_historico).
+            data_processor.registrar_historico(base["nome"], None, observacao="Falha no download (ver logs/rpa.log)")
             continue
         try:
             final_path = data_processor.process_base(downloaded_path, base)
@@ -73,6 +78,7 @@ def run_bases(bases: list[dict], headless: bool = True):
             logger.info("=== Base '%s' concluída com sucesso ===", base["nome"])
         except Exception:
             logger.exception("Falha ao processar a base '%s'", base["nome"])
+            data_processor.registrar_historico(base["nome"], None, observacao="Falha ao processar (ver logs/rpa.log)")
 
 
 def main():

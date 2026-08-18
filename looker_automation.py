@@ -1,11 +1,12 @@
 """
 Automação do download dos relatórios no Looker via Playwright.
 
-As 4 bases (numero_contratos, dias_sem_producao, meta_financiamento_seguro,
-carteira_parceiros) têm cada uma seu próprio fluxo dedicado de navegação e
-download, validado rodando de verdade contra o portal - não são mais um
-esqueleto. O relatório é hospedado no Google Looker de verdade, embutido
-dentro do WebAutorizador via janelas pop-up sucessivas.
+As 5 bases (numero_contratos, dias_sem_producao, meta_financiamento_seguro,
+carteira_parceiros, comissao_a_vista) têm cada uma seu próprio fluxo
+dedicado de navegação e download. As 4 primeiras já foram validadas
+rodando de verdade contra o portal - "comissao_a_vista" ainda não (ver
+aviso na seção dela abaixo). O relatório é hospedado no Google Looker de
+verdade, embutido dentro do WebAutorizador via janelas pop-up sucessivas.
 
 Rodar `python looker_automation.py --base <id> --debug` abre o navegador
 visível (headless=False) para acompanhar o fluxo no site real.
@@ -35,6 +36,29 @@ ICON_MORE_VERT_PATH = (
 )
 
 
+def _confirmar_dados_cadastrais_se_necessario(page: Page):
+    """
+    Depois do login, o portal às vezes exige passar por uma tela
+    "Atualizar meus Dados Cadastrais" (e-mail/celular já vêm preenchidos,
+    "Necessário atualizar os dados cadastrais... para validações futuras")
+    antes de liberar o acesso normal - sem isso, o menu "Relatórios" nunca
+    aparece e a navegação trava logo no primeiro passo (confirmado ao vivo
+    em 18/08/2026, derrubando as 5 bases de uma vez). Se a tela aparecer,
+    clica em "Confirmar" mantendo os dados como já estão preenchidos; se
+    não aparecer (caso normal, na maioria das execuções), não faz nada.
+    """
+    page.wait_for_timeout(1500)
+    confirmar = page.get_by_text("Confirmar", exact=True)
+    if confirmar.count() == 0:
+        return
+    logger.info(
+        "Tela 'Atualizar meus Dados Cadastrais' apareceu após o login - "
+        "confirmando com os dados já preenchidos."
+    )
+    confirmar.first.click()
+    page.wait_for_load_state("networkidle")
+
+
 def login(page: Page):
     """
     Login no portal C6 Consig (WebAutorizador - página ASP.NET clássica,
@@ -45,7 +69,9 @@ def login(page: Page):
 
     O portal costuma mostrar um confirm() JS ("Usuário já autenticado em
     outra estação. Deseja desconectar-se...") quando já existe uma sessão
-    ativa - aceitamos automaticamente para forçar a nova sessão.
+    ativa - aceitamos automaticamente para forçar a nova sessão. Também
+    pode exigir confirmar os dados cadastrais antes de liberar o acesso
+    (ver `_confirmar_dados_cadastrais_se_necessario`).
     """
     page.on("dialog", lambda dialog: dialog.accept())
 
@@ -54,6 +80,7 @@ def login(page: Page):
     page.locator("#ESenha_CAMPO").fill(config.LOOKER_PASSWORD)
     page.locator("#lnkEntrar").click()
     page.wait_for_load_state("networkidle")
+    _confirmar_dados_cadastrais_se_necessario(page)
 
 
 # --------------------------------------------------------------------------
@@ -568,6 +595,105 @@ def download_carteira_parceiros_report(context: BrowserContext, page: Page, base
     return path
 
 
+# --------------------------------------------------------------------------
+# Fluxo dedicado - base "comissao_a_vista" (Apuração Comissão à Vista,
+# dentro do mesmo card "Apuração Parceiro 2.0" de Meta Financiamento e
+# Seguro, porém um link diferente dentro dele).
+#
+# Validado ao vivo em 17/08/2026 (screenshot real do dashboard) até o
+# filtro/download - dois ajustes feitos nessa validação, diferente do que
+# a especificação original descrevia:
+#   - O link do catálogo é "Apuração Comissão À Vista" (com "À" maiúsculo,
+#     não "à" minúsculo - `exact=True` é sensível a isso).
+#   - O filtro de período NÃO se chama "Referência" - é "Safra Mês", o
+#     MESMO widget de Meta Financiamento e Seguro (padrão salvo "is in the
+#     last 6 months"), por isso reaproveita `apply_safra_mes_filter` (em
+#     vez de só verificar como as outras bases fazem) - inclusive a
+#     exceção de janela curta na virada de mês, que faz sentido igual
+#     aqui (mesma família de relatório "Apuração Parceiro 2.0").
+#   - `secao_tabela` (config.py) é "Analítico" - mesmo padrão de Número de
+#     Contratos, não o nome do relatório como a especificação sugeria.
+# Fluxo completo (login -> filtro -> download -> tratamento) validado de
+# ponta a ponta ao vivo em 17/08/2026 - ver também a chave de comparação
+# já definida em `regras["chave_comparacao"]` (config.py) e o filtro da
+# linha de totais em `data_processor._process_comissao_a_vista`.
+# --------------------------------------------------------------------------
+
+def open_apuracao_comissao_a_vista(context: BrowserContext, page: Page, base: dict) -> Page:
+    """
+    Navega até o dashboard "Apuração Comissão à Vista": Relatórios (hover) >
+    Relatórios Gerenciais (abre pop-up com o catálogo) > card "Auto" > link
+    "Apuração Comissão à Vista" (dentro do card "Apuração Parceiro 2.0") -
+    abre outra pop-up com o dashboard final. Mesma estrutura de navegação
+    de `open_resumo_parceiro` (mesmo card no catálogo), só muda o link
+    clicado dentro dele.
+    """
+    page.get_by_text("Relatórios", exact=True).first.hover()
+    page.wait_for_timeout(500)
+
+    with context.expect_page(timeout=15000) as popup_info:
+        page.get_by_text("Relatórios Gerenciais", exact=True).first.click()
+    catalogo = popup_info.value
+    catalogo.wait_for_load_state("networkidle", timeout=20000)
+    catalogo.wait_for_timeout(5000)
+
+    catalogo.get_by_text("Auto", exact=False).first.click()
+    catalogo.wait_for_timeout(3000)
+    catalogo.wait_for_load_state("networkidle", timeout=15000)
+    catalogo.wait_for_timeout(2000)
+
+    link = catalogo.get_by_text(base["link_relatorio"], exact=True).first
+    with context.expect_page(timeout=10000) as popup_info2:
+        link.click(force=True)
+    final_page = popup_info2.value
+    catalogo.close()
+
+    final_page.wait_for_load_state("domcontentloaded", timeout=20000)
+    final_page.wait_for_timeout(8000)
+    return final_page
+
+
+def download_comissao_a_vista_spreadsheet(final_page: Page, base_id: str, secao_tabela: str) -> Path:
+    """
+    Rola até a seção/tabela do relatório (referência configurada em
+    `secao_tabela`, config.py) e completa o download - mesmo padrão de
+    `download_bloco_metas_spreadsheet`.
+    """
+    secao = final_page.get_by_text(secao_tabela, exact=True).last
+    secao.scroll_into_view_if_needed()
+    final_page.wait_for_timeout(1000)
+
+    tile_button = _find_tile_actions_button(final_page, secao)
+    tile_button.hover()
+    final_page.wait_for_timeout(300)
+    tile_button.click(force=True)
+    final_page.wait_for_timeout(1000)
+
+    return _complete_download_dialog(final_page, base_id)
+
+
+def download_comissao_a_vista_report(context: BrowserContext, page: Page, base: dict) -> Path:
+    """
+    Fluxo completo específico da base 'comissao_a_vista'. O filtro "Safra
+    Mês" precisa refletir o mesmo mês/ano usado pelo relatório "Analítico"
+    (base numero_contratos) - como ambos derivam do mês/ano corrente do
+    sistema (`config.periodo_referencia_atual`), isso já vale
+    automaticamente contanto que as duas bases rodem dentro do mesmo mês
+    civil (não precisa passar período explícito entre elas).
+    """
+    ano_ref, mes_ref = config.periodo_referencia_atual()
+    logger.info(
+        "Base 'Comissão à Vista': usando referência %02d/%d (mesmo mês/ano do relatório Analítico).",
+        mes_ref, ano_ref,
+    )
+    final_page = open_apuracao_comissao_a_vista(context, page, base)
+    apply_safra_mes_filter(final_page)
+    update_report_data(final_page)
+    path = download_comissao_a_vista_spreadsheet(final_page, base["id"], base["secao_tabela"])
+    final_page.close()
+    return path
+
+
 def _download_single_base(context: BrowserContext, page: Page, base: dict) -> Path:
     """Despacha para o fluxo dedicado de download de uma base, assumindo que
     `page` já está logada no portal."""
@@ -579,8 +705,13 @@ def _download_single_base(context: BrowserContext, page: Page, base: dict) -> Pa
         return download_meta_financiamento_seguro_report(context, page, base)
     elif base["id"] == "carteira_parceiros":
         return download_carteira_parceiros_report(context, page, base)
+    elif base["id"] == "comissao_a_vista":
+        return download_comissao_a_vista_report(context, page, base)
     else:
         raise ValueError(f"Base '{base['id']}' não tem fluxo de download implementado")
+
+
+MAX_TENTATIVAS_POR_BASE = 2  # toda base tenta pelo menos 2x antes de ser considerada falha/pulada (ver download_bases)
 
 
 def download_bases(bases: list[dict], headless: bool = True) -> dict[str, Path]:
@@ -594,6 +725,18 @@ def download_bases(bases: list[dict], headless: bool = True) -> dict[str, Path]:
     Retorna um dict {base_id: caminho_do_arquivo_baixado} só com as bases
     que baixaram com sucesso - falha em uma base é logada e não impede as
     demais de serem tentadas na mesma sessão.
+
+    Toda base tenta de novo automaticamente em caso de falha técnica/de
+    navegação, até `MAX_TENTATIVAS_POR_BASE` vezes (reabrindo a navegação
+    do zero a cada tentativa), antes de ser considerada "pulada" e a
+    execução seguir para a próxima base. A base "dias_sem_producao" (SLA)
+    tem uma falha técnica intermitente já conhecida (timeout esperando a
+    tabela carregar - ver GUIA_TIME_DADOS.md seção 10), então esse retry é
+    especialmente relevante para ela, mas vale para as 5 bases igualmente.
+    Um download que funciona mas vem com a planilha vazia **não** é uma
+    falha (não entra nesse retry, e não deveria - "pular" nesse caso é o
+    comportamento correto) - isso é tratado à parte em `data_processor`,
+    que só loga um aviso e segue em frente, sem nada para adicionar.
     """
     resultados: dict[str, Path] = {}
     with sync_playwright() as p:
@@ -617,35 +760,55 @@ def download_bases(bases: list[dict], headless: bool = True) -> dict[str, Path]:
                     )
                     break
 
-                paginas_antes = set(context.pages)
-                try:
-                    resultados[base["id"]] = _download_single_base(context, page, base)
-                except Exception:
-                    logger.exception("Falha ao baixar a base '%s' do Looker", base["nome"])
-                    if base["id"] == "dias_sem_producao":
-                        # Falha conhecida (ver GUIA_TIME_DADOS.md secao 10) - reforçar
-                        # aqui para quem for ler o log não interpretar como "não há
-                        # dados para o período": é um problema técnico de navegação/
-                        # carregamento da página no portal, não ausência de informação.
-                        logger.warning(
-                            "A base 'Dias sem Produção' (SLA) NÃO falhou por falta de "
-                            "dados - é um problema técnico já conhecido de navegação/"
-                            "carregamento no portal. A base foi pulada nesta execução; "
-                            "as demais bases não são afetadas."
-                        )
-                finally:
-                    # Se a base falhou antes de chegar no `final_page.close()` do
-                    # seu próprio fluxo, a aba/pop-up daquele relatório fica aberta
-                    # e "suja" a sessão para a próxima base (foi o que causava a
-                    # Carteira e Parceiros falhar logo depois do SLA falhar, já que
-                    # ela vem em seguida em config.BASES). Fecha qualquer aba nova
-                    # que ainda esteja aberta, com sucesso ou falha.
-                    for pagina in context.pages:
-                        if pagina not in paginas_antes and pagina is not page and not pagina.is_closed():
-                            try:
-                                pagina.close()
-                            except Exception:
-                                pass
+                max_tentativas = MAX_TENTATIVAS_POR_BASE
+                for tentativa in range(1, max_tentativas + 1):
+                    paginas_antes = set(context.pages)
+                    try:
+                        resultados[base["id"]] = _download_single_base(context, page, base)
+                        break  # sucesso - não tenta de novo
+                    except Exception:
+                        ultima_tentativa = tentativa == max_tentativas
+                        if not ultima_tentativa:
+                            # Ainda tem tentativa sobrando - loga como aviso (não como
+                            # falha final) e tenta de novo do zero, dando um tempo para
+                            # o portal/dashboard terminar de carregar antes de reabrir.
+                            logger.warning(
+                                "Falha ao baixar a base '%s' do Looker (tentativa %d/%d) - "
+                                "tentando de novo...",
+                                base["nome"], tentativa, max_tentativas, exc_info=True,
+                            )
+                            page.wait_for_timeout(5000)
+                        else:
+                            logger.exception(
+                                "Falha ao baixar a base '%s' do Looker (tentativa %d/%d, desistindo)",
+                                base["nome"], tentativa, max_tentativas,
+                            )
+                            if base["id"] == "dias_sem_producao":
+                                # Falha conhecida (ver GUIA_TIME_DADOS.md secao 10) - reforçar
+                                # aqui para quem for ler o log não interpretar como "não há
+                                # dados para o período": é um problema técnico de navegação/
+                                # carregamento da página no portal, não ausência de informação.
+                                logger.warning(
+                                    "A base 'Dias sem Produção' (SLA) NÃO falhou por falta de "
+                                    "dados - é um problema técnico já conhecido de navegação/"
+                                    "carregamento no portal, mesmo após %d tentativas. A base "
+                                    "foi pulada nesta execução; as demais bases não são afetadas.",
+                                    max_tentativas,
+                                )
+                    finally:
+                        # Se a base falhou antes de chegar no `final_page.close()` do
+                        # seu próprio fluxo, a aba/pop-up daquele relatório fica aberta
+                        # e "suja" a sessão para a próxima tentativa/base (foi o que
+                        # causava a Carteira e Parceiros falhar logo depois do SLA
+                        # falhar, já que ela vem em seguida em config.BASES). Fecha
+                        # qualquer aba nova que ainda esteja aberta, com sucesso ou
+                        # falha, antes de tentar de novo ou seguir para a próxima base.
+                        for pagina in context.pages:
+                            if pagina not in paginas_antes and pagina is not page and not pagina.is_closed():
+                                try:
+                                    pagina.close()
+                                except Exception:
+                                    pass
         finally:
             context.close()
             browser.close()

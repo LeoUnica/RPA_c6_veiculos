@@ -8,7 +8,7 @@ estender para uma base nova no futuro.
 ## 1. O que esse projeto faz
 
 Automatiza (via [Playwright](https://playwright.dev/python/), controlando
-um navegador Chromium de verdade) o processo manual de atualização de 4
+um navegador Chromium de verdade) o processo manual de atualização de 5
 planilhas usadas pelo time de dados de Veículos (C6):
 
 1. Loga no portal C6 Consig e navega até o Looker embutido (Relatórios >
@@ -19,30 +19,77 @@ planilhas usadas pelo time de dados de Veículos (C6):
    duplicidade).
 4. Atualiza duas planilhas locais por base: uma "Prévia" (o que acabou de
    ser baixado/tratado) e a planilha "de origem" oficial, que acumula o
-   histórico completo.
-5. Pinta de **verde** as linhas novas e de **amarelo** as linhas
-   editadas na Prévia, para facilitar a conferência visual do que mudou
-   naquela execução (ver seção 9).
+   histórico completo. Nas primeiras 4 bases, o período atual é removido
+   e recolado a cada execução; em "Comissão à Vista" (5ª base), as duas
+   planilhas só recebem linhas novas no final, nunca são reescritas (ver
+   seção 1.1).
+5. Pinta de **verde** as linhas novas (e, nas primeiras 4 bases, de
+   **amarelo** as linhas editadas) na Prévia, para facilitar a
+   conferência visual do que mudou naquela execução (ver seção 9).
 
-As 4 bases hoje configuradas:
+As 5 bases hoje configuradas:
 
-| Base (`id` em `config.py`) | Nome | Frequência | Chave única (deduplicação) |
-|---|---|---|---|
-| `numero_contratos` | Número de Contratos | Diária | `ID Proposta` |
-| `meta_financiamento_seguro` | Meta Financiamento e Seguro | Mensal | `Anomes Apuracao` + `Filial` |
-| `dias_sem_producao` | Dias sem Produção | Semanal (segundas) | `Cd Loja` + `Safra Mes` |
-| `carteira_parceiros` | Carteira e Parceiros | Diária | `Cnpj Da Loja` + `Filial` + `Anomes` |
+| Base (`id` em `config.py`) | Nome | Frequência | Chave única (deduplicação) | Status |
+|---|---|---|---|---|
+| `numero_contratos` | Número de Contratos | Diária | `ID Proposta` | ✅ Em operação |
+| `meta_financiamento_seguro` | Meta Financiamento e Seguro | Mensal | `Anomes Apuracao` + `Filial` | ✅ Em operação |
+| `dias_sem_producao` | Dias sem Produção | Semanal (segundas) | `Cd Loja` + `Safra Mes` | ✅ Em operação |
+| `carteira_parceiros` | Carteira e Parceiros | Diária | `Cnpj Da Loja` + `Filial` + `Anomes` | ✅ Em operação |
+| `comissao_a_vista` | Comissão à Vista - Analítico | Mensal | `Cd Contrato` + `Anomes Apuracao` | ✅ Em operação |
 
-Nenhuma das 4 bases usa SharePoint hoje - tudo é lido/gravado em pastas
+Nenhuma das 5 bases usa SharePoint hoje - tudo é lido/gravado em pastas
 locais (normalmente sincronizadas por OneDrive). O módulo
 `sharepoint_sync.py` existe no repositório mas não é chamado por nenhuma
 delas; pode ser ignorado.
+
+### 1.1 Particularidade da base "Comissão à Vista"
+
+A Prévia (`config.caminho_previa_comissao_a_vista`) funciona exatamente
+como as outras 4 bases: reescrita por inteiro a cada execução, mesclando
+com o que já existia (uma chave já existente é **atualizada** com o dado
+mais recente baixado, não só ignorada) e com a cor recalculada do zero -
+verde/amarelo, ver seção 9 (`_marcar_linhas_novas_e_editadas`).
+
+Já a planilha de origem oficial
+(`config.caminho_planilha_origem_comissao_a_vista`, que já vinha sendo
+mantida pelo time com dados de meses anteriores antes desta base existir
+no RPA) segue uma regra diferente e não muda: nunca é reescrita nem
+colorida, só **adiciona** ao final os registros com chave genuinamente
+nova (comparando pela chave `Cd Contrato` + `Anomes Apuracao`,
+`regras["chave_comparacao"]` em `config.py`) - uma chave já existente
+NÃO é atualizada mesmo que algum dado tenha mudado no download (ver
+`_acumular_origem_comissao_a_vista`). Cada célula nova é formatada
+seguindo o modelo da 1ª linha de dado já existente (moeda/percentual,
+fonte, borda) e o texto fica sempre alinhado à direita.
+
+Essa planilha já tinha, de antes desta base existir no RPA, uma **linha
+de totais** no final (identificação vazia, soma nas colunas "R$..." e
+média nas colunas "%..."). Ela é sempre removida de onde estiver,
+recalculada com todos os dados atuais (antigos + novos) e recolocada como
+a última linha - assim nunca fica "presa" no meio conforme mais dados vão
+sendo adicionados nas próximas execuções (bug real encontrado e corrigido
+em 18/08/2026, ver `_calcular_linha_totais`/`_separar_linha_totais`).
+
+Validada de ponta a ponta contra o portal e contra a planilha de origem
+oficial real em 17/08/2026. Dois detalhes reais encontrados nessa
+validação, caso precise mexer no fluxo:
+
+- O relatório baixado traz uma **linha de totais** no final (todas as
+  colunas de identificação vêm vazias, só os valores em R$ somados) -
+  descartada automaticamente filtrando por `Cd Contrato` vazio.
+- Pelo menos uma coluna do Looker vem com **espaços/quebra de linha ao
+  redor do nome** (ex: `"\n    R$ Comissão À Vista Bruto - Master\n    "`)
+  - os nomes de coluna do download são sempre limpos (`str.strip()`)
+  antes de comparar com a planilha existente, senão o alinhamento de
+  colunas trata como coluna diferente e os dados daquela coluna ficam
+  vazios nas linhas novas (bug real já corrigido, ver
+  `_process_comissao_a_vista`).
 
 ## 2. Estrutura do código
 
 ```
 RPA_c6_veiculos/
-├── config.py              # As 4 bases (looker_path, colunas, regras) + caminhos das pastas locais
+├── config.py              # As 5 bases (looker_path, colunas, regras) + caminhos das pastas locais
 ├── looker_automation.py   # Login, navegação e download no Looker (Playwright)
 ├── data_processor.py      # Tratamento, merge e marcação de cores (pandas + openpyxl)
 ├── sharepoint_sync.py     # Upload/download SharePoint - existe, mas não usado hoje
@@ -50,7 +97,7 @@ RPA_c6_veiculos/
 ├── requirements.txt
 ├── .env.example           # Modelo de variáveis de ambiente
 ├── downloads/             # Arquivos brutos baixados do Looker (gerada em runtime)
-├── staging/                # Não usada pelas 4 bases atuais (reservada para o fluxo SharePoint)
+├── staging/                # Não usada pelas 5 bases atuais (reservada para o fluxo SharePoint)
 └── logs/rpa.log            # Log de cada execução
 ```
 
@@ -187,18 +234,17 @@ branco (não são usadas hoje).
 
 ### 6.2 Caminhos das pastas locais (passo mais importante - lê com atenção)
 
-`config.py` tem, para cada uma das 4 bases, um caminho de pasta "padrão"
+`config.py` tem, para cada uma das 5 bases, um caminho de pasta "padrão"
 com o endereço das pastas do computador onde este projeto foi
 desenvolvido (ex: `C:\Users\leonardo.mudrik\Desktop\C6 Bank\...`). **Esse
 caminho não existe no seu computador** - é de outro setor, com outra
 estrutura de pastas. Sem ajustar isso, o programa vai tentar criar as
 planilhas dentro de uma pasta que não existe e o Python vai dar erro.
 
-Para corrigir, **não precisa editar `config.py`** - basta adicionar 8
-linhas no seu `.env` (o mesmo arquivo da seção 6.1), cada uma apontando
-para onde **você** quer que aquela planilha fique salva no seu setor.
-São 2 pastas por base (a "Prévia" e a "origem oficial"), 4 bases = 8
-variáveis:
+Para corrigir, **não precisa editar `config.py`** - basta adicionar linhas
+no seu `.env` (o mesmo arquivo da seção 6.1), cada uma apontando para onde
+**você** quer que aquela planilha fique salva no seu setor. São 2 pastas
+por base (a "Prévia" e a "origem oficial") = 10 variáveis:
 
 ```
 PREVIA_NUMERO_CONTRATOS_DIR=C:\Users\seu.usuario\Desktop\C6 Bank\Número de Contratos - Previa
@@ -212,6 +258,9 @@ PLANILHA_ORIGEM_META_FINANCIAMENTO_SEGURO_DIR=C:\Users\seu.usuario\Desktop\Setor
 
 PREVIA_CARTEIRA_PARCEIROS_DIR=C:\Users\seu.usuario\Desktop\C6 Bank\Carteira de parceiros e filiais - Previa
 PLANILHA_ORIGEM_CARTEIRA_PARCEIROS_DIR=C:\Users\seu.usuario\Desktop\Setor Dados\Ana Price\Carteira de parceiros e filiais
+
+PREVIA_COMISSAO_A_VISTA_DIR=C:\Users\seu.usuario\Desktop\C6 Bank\Comissão à Vista - Analitico - Previa
+PLANILHA_ORIGEM_COMISSAO_A_VISTA_DIR=C:\Users\seu.usuario\Desktop\Setor Dados\Ana Price\Comissao à Vista
 ```
 
 **Como decidir o caminho certo:** cada `PREVIA_..._DIR` é só uma pasta
@@ -245,6 +294,7 @@ apontar o caminho, para não perder o histórico já acumulado.
 | Dias sem Produção | `Dias sem produção - Previa.xlsx` | `<pasta>\DIAS SEM PRODUCAO.xlsx` (arquivo único) |
 | Meta Financiamento e Seguro | `Meta Financiamento e Seguro - Previa.xlsx` | `<pasta>\Meta Financiamento Seguro - {ano}.xlsx` (um arquivo por ano) |
 | Carteira e Parceiros | `Carteira de parceiros e filiais - Previa.xlsx` | `<pasta>\CARTEIRA- {ano}.xlsx` (um arquivo por ano) |
+| Comissão à Vista - Analítico | `Comissão à Vista - Analitico - Previa.xlsx` | `<pasta>\Comissão A Vista - Analitico.xlsx` (arquivo único, sem separação por ano) |
 
 ## 7. VS Code - extensões recomendadas
 
@@ -264,7 +314,8 @@ Interpreter" → escolher `venv\Scripts\python.exe`.
 venv\Scripts\activate
 
 python main.py --base numero_contratos      # ids: numero_contratos, dias_sem_producao,
-                                              # meta_financiamento_seguro, carteira_parceiros
+                                              # meta_financiamento_seguro, carteira_parceiros,
+                                              # comissao_a_vista
 python main.py --all                         # todas de uma vez
 python main.py --frequencia diaria           # todas de uma frequência (uso em agendamento)
 ```
@@ -302,8 +353,12 @@ de comparar (o Excel perde um pouco de precisão de ponto flutuante ao
 salvar/reabrir, o que geraria falsos "editada" em valores que na
 prática não mudaram).
 
-Essa marcação só existe na Prévia (`Desktop\C6 Bank\...`) - a planilha de
-origem oficial não é colorida.
+A Prévia de "Comissão à Vista" usa essa mesma função
+(`_marcar_linhas_novas_e_editadas`) e segue exatamente o mesmo padrão das
+outras 4 - ver seção 1.1.
+
+Essa marcação só existe nas 5 Prévias (`Desktop\C6 Bank\...`) - nenhuma
+planilha de origem oficial é colorida.
 
 ## 10. Problemas conhecidos
 
@@ -316,17 +371,24 @@ origem oficial não é colorida.
 - **Sessão já ativa:** se o usuário já estiver logado em outro lugar, o
   portal mostra um `confirm()` perguntando se quer continuar - o código já
   aceita esse diálogo sozinho, não precisa de ação manual.
+- **Retry automático em toda base:** qualquer falha técnica/de navegação,
+  em qualquer uma das 5 bases, é tentada de novo automaticamente - até
+  `MAX_TENTATIVAS_POR_BASE` (2) vezes, reabrindo a navegação do zero a
+  cada tentativa - antes de desistir e marcar a base como pulada e seguir
+  para a próxima (ver `looker_automation.download_bases`). Um download que
+  funciona mas vem com a planilha vazia **não** entra nesse retry - isso
+  não é tratado como erro, só é logado e a execução segue em frente (é o
+  comportamento correto quando não há dados no período).
 - **Dias sem Produção (SLA) falhando na navegação:** essa base tem
   apresentado timeout esperando a tabela ("Cnpj Da Loja") carregar depois
   do Update, com a página chegando a fechar sozinha em alguns casos. Ainda
   não foi encontrada a causa raiz (pode ser lentidão específica desse
-  dashboard no Looker). **Importante: essa falha é técnica (navegação/
-  carregamento da página), não significa que não há dados disponíveis
-  para o período** - o log já imprime um aviso explícito nesse sentido
-  quando acontece (ver `looker_automation.download_bases`). Por ora, o
-  comportamento aceito é deixar tentar normalmente: quando falha, o erro é
-  logado e as outras 3 bases rodam sem problema (ver próximo item). Se for
-  investigar, `looker_automation.py` tem as funções
+  dashboard no Looker) - o retry automático acima existe especialmente por
+  causa dela. **Importante: essa falha é técnica (navegação/carregamento
+  da página), não significa que não há dados disponíveis para o
+  período** - só depois de esgotar as tentativas o erro é logado como
+  falha final, com o aviso explícito de que não é ausência de dados. Se
+  for investigar a causa raiz, `looker_automation.py` tem as funções
   `open_sla_analitico`/`download_sla_analitico_spreadsheet` dedicadas a
   essa base.
 - **`--all`/`--frequencia` não para mais no meio:** se uma base falhar
@@ -355,5 +417,3 @@ origem oficial não é colorida.
 4. Testar isoladamente com
    `python looker_automation.py --base <id> --debug` antes de rodar o
    fluxo completo com `python main.py --base <id>`.
-
-
