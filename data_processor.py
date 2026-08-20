@@ -299,8 +299,16 @@ def _process_numero_contratos(downloaded_path: Path, base: dict) -> Path:
          linha já preenchida (🟩 verde) e contrato existente é atualizado
          onde já estava se algum dado mudou (🟨 amarelo); nunca remove uma
          linha.
+      5. Mescla também a Prévia numa segunda planilha, "Digitação
+         Analítico - {ano}_Anual" (mesma pasta da planilha do passo 4),
+         usando `_acumular_e_colorir_origem` - mesma regra de cor do
+         passo 4, mas SEM reordenar por data: contrato novo é sempre
+         acrescentado logo depois da última linha já preenchida, na ordem
+         em que foi sendo processado ao longo do ano, funcionando como um
+         acumulado histórico único (a planilha do passo 4 é reordenada por
+         data a cada execução; esta não).
 
-    Em ambas as planilhas, o resultado final fica ordenado por data
+    Na planilha do passo 4, o resultado final fica ordenado por data
     crescente (do menor para o maior dia de cada mês, mês a mês) - não só
     o bloco novo, a tabela inteira é reordenada por data a cada execução.
     """
@@ -358,6 +366,17 @@ def _process_numero_contratos(downloaded_path: Path, base: dict) -> Path:
         "Planilha de origem atualizada: %s (+%d contratos novos, %d no total)",
         origem_path, linhas_novas, len(df_final),
     )
+
+    # --- 3. Mescla na planilha "_Anual" (mesmo ano, sem reordenar por data) ---
+    origem_anual_path = config.caminho_planilha_origem_numero_contratos_anual(ano)
+    df_final_anual, linhas_novas_anual = _acumular_e_colorir_origem(
+        origem_anual_path, df_previa, chave, autofiltro,
+    )
+    logger.info(
+        "Planilha '_Anual' atualizada: %s (+%d contratos novos, %d no total)",
+        origem_anual_path, linhas_novas_anual, len(df_final_anual),
+    )
+
     observacao = "Sem dados no período" if linhas_baixadas == 0 else ""
     registrar_historico(base["nome"], linhas_baixadas, linhas_novas, len(df_final), observacao)
     return origem_path
@@ -505,22 +524,24 @@ def _process_carteira_parceiros(downloaded_path: Path, base: dict) -> Path:
     Fluxo específico da base "Carteira e Parceiros":
       1. Não há filtro de colunas nem de status - o arquivo baixado é usado
          como está (todas as colunas).
-      2. Acumula o resultado na "Prévia", mesclando com a Prévia da
-         execução anterior sem duplicar por `Cnpj Da Loja` + `Filial` +
-         `Anomes` (ver `_acumular_planilha`) - uma linha vista numa
-         execução anterior NUNCA é descartada da Prévia, nem uma linha de
-         um ano já fechado, mesmo que o filtro "Referência" do Looker seja
-         "Este Ano" e não a traga mais. Chave nova = 🟩 verde, chave
-         existente com dado alterado = 🟨 amarelo.
-      3. Mescla essa mesma Prévia em cada planilha de origem oficial
-         ("Base Price", uma por ano) - a chave nova é acrescentada depois
-         da última linha já preenchida (🟩 verde) e a chave existente é
-         atualizada onde já estava se algum dado mudou (🟨 amarelo); nunca
-         remove uma linha. Roteado por ano a partir de TODOS os anos
-         presentes na Prévia acumulada (não só no download desta execução,
-         que só traz o ano corrente por causa do filtro "Referência = Este
-         Ano" do Looker) - garante que um ano fechado preservado na Prévia
-         também acabe entrando na planilha de origem correta.
+      2. Acumula o resultado na "Prévia", mas só o mês atual (mesmo padrão
+         de "Número de Contratos" - ver `_process_numero_contratos`):
+         qualquer linha de um "Anomes" diferente do mês/ano corrente é
+         descartada, tanto da Prévia já salva quanto do download desta
+         execução, antes de mesclar sem duplicar por `Cnpj Da Loja` +
+         `Filial` + `Anomes`. Chave nova = 🟩 verde, chave existente com
+         dado alterado = 🟨 amarelo.
+      3. A planilha de origem oficial ("Base Price", uma por ano) continua
+         recebendo o download da execução INTEIRO (todos os meses do ano
+         corrente, não só a Prévia recortada do passo 2) - a chave nova é
+         acrescentada depois da última linha já preenchida (🟩 verde) e a
+         chave existente é atualizada onde já estava se algum dado mudou
+         (🟨 amarelo); nunca remove uma linha. Roteado por ano a partir de
+         TODOS os anos presentes no download desta execução. Um ano já
+         fechado (que o filtro "Referência = Este Ano" do Looker parou de
+         trazer) continua preservado no próprio arquivo de origem daquele
+         ano, já que `_acumular_planilha` nunca descarta uma linha
+         existente na origem, mesmo sem receber dado novo dela.
 
     Em ambas as planilhas (Prévia e origem oficial), o resultado final fica
     ordenado por "Anomes" crescente (do mês mais antigo para o mais
@@ -532,43 +553,56 @@ def _process_carteira_parceiros(downloaded_path: Path, base: dict) -> Path:
             return df.sort_values(by="Anomes", ascending=True, kind="stable").reset_index(drop=True)
         return df
 
+    def _apenas_mes_atual(df: pd.DataFrame) -> pd.DataFrame:
+        if "Anomes" in df.columns and not df.empty:
+            ano, mes = config.periodo_referencia_atual()
+            anomes_atual = ano * 100 + mes
+            return df[df["Anomes"].astype(int) == anomes_atual]
+        return df
+
     df_tratado = pd.read_excel(downloaded_path)
     linhas_baixadas = len(df_tratado)
     df_tratado = _ordenar_por_anomes(df_tratado)
 
+    # --- 1. Acumula na "Prévia", mas só o mês atual (não o ano inteiro) ---
     previa_path = config.caminho_previa_carteira_parceiros()
     previa_path.parent.mkdir(parents=True, exist_ok=True)
-    df_previa, df_previa_anterior = _acumular_planilha(previa_path, df_tratado, CHAVE_UNICA_CARTEIRA_PARCEIROS)
+
+    df_previa_existente = pd.read_excel(previa_path) if previa_path.exists() else pd.DataFrame(columns=df_tratado.columns)
+    df_previa_existente = _apenas_mes_atual(df_previa_existente)  # descarta sobra de mês anterior já acumulada
+
+    df_previa = pd.concat([df_previa_existente, _apenas_mes_atual(df_tratado)], ignore_index=True)
+    df_previa = df_previa.drop_duplicates(subset=CHAVE_UNICA_CARTEIRA_PARCEIROS, keep="last")
     df_previa = _ordenar_por_anomes(df_previa)
 
     df_previa.to_excel(previa_path, index=False)
     if base["regras"].get("aplicar_autofiltro_excel"):
         _apply_excel_autofilter(previa_path)
-    _marcar_linhas_novas_e_editadas(previa_path, df_previa, CHAVE_UNICA_CARTEIRA_PARCEIROS, df_previa_anterior)
-    logger.info("Prévia atualizada (sem duplicar %s): %s (%d linhas)", CHAVE_UNICA_CARTEIRA_PARCEIROS, previa_path, len(df_previa))
+    _marcar_linhas_novas_e_editadas(previa_path, df_previa, CHAVE_UNICA_CARTEIRA_PARCEIROS, df_previa_existente)
+    logger.info("Prévia atualizada (somente mês atual, sem duplicar %s): %s (%d linhas)", CHAVE_UNICA_CARTEIRA_PARCEIROS, previa_path, len(df_previa))
 
-    if df_previa.empty:
+    if df_tratado.empty:
         logger.warning(
-            "Relatório '%s' baixado veio vazio e a Prévia também está vazia - "
-            "nada para atualizar na planilha de origem oficial.",
+            "Relatório '%s' baixado veio vazio - nada para atualizar na planilha de origem oficial.",
             base["nome"],
         )
         registrar_historico(base["nome"], linhas_baixadas, 0, None, "Sem dados no período")
         return previa_path
 
+    # --- 2. Mescla o download INTEIRO (todos os meses do ano) na origem oficial ---
     autofiltro = bool(base["regras"].get("aplicar_autofiltro_excel"))
-    anos_presentes = sorted(df_previa["Anomes"].astype(str).str[:4].unique())
+    anos_presentes = sorted(df_tratado["Anomes"].astype(str).str[:4].unique())
     origem_paths = []
     linhas_total_todos_anos = 0
     linhas_novas_todos_anos = 0
 
     for ano_str in anos_presentes:
         ano = int(ano_str)
-        df_ano_previa = df_previa[df_previa["Anomes"].astype(str).str[:4] == ano_str]
+        df_ano_tratado = df_tratado[df_tratado["Anomes"].astype(str).str[:4] == ano_str]
 
         origem_path = config.caminho_planilha_origem_carteira_parceiros(ano)
         origem_path.parent.mkdir(parents=True, exist_ok=True)
-        df_final, df_anterior = _acumular_planilha(origem_path, df_ano_previa, CHAVE_UNICA_CARTEIRA_PARCEIROS)
+        df_final, df_anterior = _acumular_planilha(origem_path, df_ano_tratado, CHAVE_UNICA_CARTEIRA_PARCEIROS)
 
         # `pd.concat` (dentro de `_acumular_planilha`) mantém a ordem de
         # colunas da planilha de origem já existente - como essa base não

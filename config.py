@@ -86,6 +86,17 @@ def caminho_planilha_origem_numero_contratos(ano: int) -> Path:
         / f"Digitação Analítico - {ano}.xlsx"
     )
 
+
+def caminho_planilha_origem_numero_contratos_anual(ano: int) -> Path:
+    """Caminho da planilha 'Digitação Analítico - {ano}_Anual', que acumula todo
+    o histórico do ano na mesma pasta da planilha mensal - ver
+    `data_processor._process_numero_contratos`."""
+    return (
+        Path(PLANILHA_ORIGEM_NUMERO_CONTRATOS_DIR)
+        / f"Numero de Contratos - {ano}"
+        / f"Digitação Analítico - {ano}_Anual.xlsx"
+    )
+
 # Pasta "Prévia" e planilha de origem oficial de "Dias sem Produção" (essa
 # base não é organizada por ano - é um único arquivo acumulando tudo).
 PREVIA_DIAS_SEM_PRODUCAO_DIR = os.getenv(
