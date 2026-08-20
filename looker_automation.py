@@ -10,6 +10,36 @@ verdade, embutido dentro do WebAutorizador via janelas pop-up sucessivas.
 
 Rodar `python looker_automation.py --base <id> --debug` abre o navegador
 visível (headless=False) para acompanhar o fluxo no site real.
+
+--------------------------------------------------------------------------
+Hierarquia de seletores (ver `_click_com_prioridade`)
+--------------------------------------------------------------------------
+Todo clique/interação neste módulo segue, quando possível, esta ordem de
+prioridade (do mais estável para o menos estável), confirmada inspecionando
+o HTML real do portal e do Looker ao vivo em 20/08/2026:
+
+  1. id fixo do portal ASP.NET ou do Looker (ex: `#WFP2010_MPCNSRELGER`,
+     `#qr-export-modal-download`, `#listbox-input-qr-export-modal-format`)
+     - controle de servidor/chrome do próprio Looker, não editável pelo
+       time que mantém os relatórios.
+  2. atributo semântico (href com o id do dashboard, aria-label, role,
+     type) - também não é conteúdo editável do relatório.
+  3. texto visível - único recurso disponível para os elementos que o
+     Looker renderiza como `<span>`/`<div>` de styled-components sem
+     nenhum id/data-testid (comum nos menus/opções do próprio visualizador
+     Looker Studio) - nesses casos o texto é string fixa da INTERFACE do
+     Looker (Google), não do conteúdo do relatório em si, então já é
+     razoavelmente estável (só muda se o Google atualizar o produto).
+     Confirmado por inspeção ao vivo que não existe alternativa melhor
+     para: cards do catálogo, chip de filtro, itens do menu "Tile
+     actions" (Download data, Advanced data options, With visualizations
+     options applied, Formatted, All results, Excel Spreadsheet).
+
+Quando existe um seletor de nível mais alto confirmado, ele é tentado
+primeiro; o texto correspondente que já funcionava antes fica como
+fallback automático (`_click_com_prioridade`), então uma mudança no
+id/atributo interno do Looker não quebra a execução - só loga um aviso
+pedindo para revalidar.
 """
 
 import argparse
@@ -18,6 +48,7 @@ import re
 import time
 from datetime import date, timedelta
 from pathlib import Path
+from typing import Callable
 
 import holidays
 from playwright.sync_api import sync_playwright, BrowserContext, Locator, Page
@@ -35,6 +66,59 @@ ICON_MORE_VERT_PATH = (
     "m0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"
 )
 
+# --------------------------------------------------------------------------
+# ids/atributos fixos confirmados por inspeção ao vivo do DOM real (não são
+# texto de relatório, então não mudam se o time renomear um botão/aba) -
+# centralizados aqui para não ficar espalhado pelo módulo.
+# --------------------------------------------------------------------------
+ID_LINK_RELATORIOS_GERENCIAIS = "WFP2010_MPCNSRELGER"  # <a id="..."> no menu ASP.NET do portal, usado pelas 5 bases
+HREF_DASHBOARD_ANALITICO_NUMERO_CONTRATOS = "corp_consignado_embed::00087"  # aba "Analítico" (numero_contratos)
+ID_COMBOBOX_FORMATO_EXPORT = "listbox-input-qr-export-modal-format"  # modal de export do Looker (chrome, todas as bases)
+ID_BOTAO_DOWNLOAD_EXPORT = "qr-export-modal-download"  # idem
+
+
+def _click_com_prioridade(tentativas: list[tuple[str, Callable[[], Locator]]], *, force: bool = False, timeout: int | None = None) -> str:
+    """
+    Clica seguindo uma HIERARQUIA de seletores, do mais estável para o
+    menos estável, em vez de depender só de texto visível (que pode ser
+    renomeado no Looker/portal sem avisar e quebrar a automação
+    silenciosamente) - ver a explicação completa no docstring do módulo.
+
+    `tentativas`: lista de (descrição, função que retorna o Locator) em
+    ordem de prioridade. Tenta cada uma, usando a primeira que encontrar
+    >=1 elemento. Loga um AVISO (não erro) se precisou cair para um nível
+    mais baixo que o primeiro - a execução não quebra (o fallback
+    funcionou), mas é um sinal de que o seletor prioritário pode ter
+    parado de bater e vale revalidar. Levanta erro só se NENHUM nível
+    funcionar. Retorna a descrição da tentativa que funcionou.
+
+    `timeout=None` (padrão) usa o timeout padrão do próprio Playwright
+    (30s) - igual ao comportamento original de todo `.click()` deste
+    módulo, que nunca passava timeout explícito. Só informe um valor
+    aqui se o clique original já tinha um timeout customizado.
+    """
+    ultimo_erro = None
+    for i, (descricao, factory) in enumerate(tentativas):
+        try:
+            locator = factory()
+            if locator.count() == 0:
+                continue
+            kwargs = {"timeout": timeout} if timeout is not None else {}
+            locator.first.click(force=force, **kwargs)
+            if i > 0:
+                logger.warning(
+                    "Seletor prioritário de '%s' não encontrado - clicou via fallback "
+                    "'%s' (nível %d). Vale revalidar o seletor de nível mais alto.",
+                    tentativas[0][0], descricao, i + 1,
+                )
+            return descricao
+        except Exception as ex:
+            ultimo_erro = ex
+            continue
+    raise RuntimeError(
+        f"Nenhum seletor da hierarquia funcionou (tentativas: {[d for d, _ in tentativas]})"
+    ) from ultimo_erro
+
 
 def _confirmar_dados_cadastrais_se_necessario(page: Page):
     """
@@ -46,6 +130,11 @@ def _confirmar_dados_cadastrais_se_necessario(page: Page):
     em 18/08/2026, derrubando as 5 bases de uma vez). Se a tela aparecer,
     clica em "Confirmar" mantendo os dados como já estão preenchidos; se
     não aparecer (caso normal, na maioria das execuções), não faz nada.
+
+    Tela condicional (só aparece às vezes) - ainda não foi possível
+    inspecionar o HTML real dela ao vivo para confirmar se o botão tem um
+    id/atributo estável (diferente do resto do login, que já usa ids
+    reais - ver `login`). Por ora, texto é o único seletor confirmado.
     """
     page.wait_for_timeout(1500)
     confirmar = page.get_by_text("Confirmar", exact=True)
@@ -66,6 +155,8 @@ def login(page: Page):
       - Usuário: input#EUsuario_CAMPO
       - Senha:   input#ESenha_CAMPO
       - Entrar:  <a id="lnkEntrar"> (link com postback, não é um <button>)
+    Já são todos ids fixos de controle ASP.NET - topo da hierarquia,
+    nenhuma mudança necessária aqui.
 
     O portal costuma mostrar um confirm() JS ("Usuário já autenticado em
     outra estação. Deseja desconectar-se...") quando já existe uma sessão
@@ -84,6 +175,87 @@ def login(page: Page):
 
 
 # --------------------------------------------------------------------------
+# Navegação compartilhada pelas 5 bases: Relatórios (hover) > Relatórios
+# Gerenciais (abre pop-up com o catálogo) > card "Auto" - idêntica nas 5,
+# só o link clicado DENTRO do catálogo muda por base (ver cada open_*).
+# --------------------------------------------------------------------------
+
+def _abrir_catalogo_auto(context: BrowserContext, page: Page) -> Page:
+    """
+    Abre o menu "Relatórios" (hover), clica em "Relatórios Gerenciais"
+    (pop-up com o catálogo do Looker) e entra no card "Auto". Retorna a
+    Page do catálogo já dentro da seção "Auto", pronta para o caller
+    clicar no link do relatório específico daquela base.
+
+    "Relatórios Gerenciais" tem id fixo (`WFP2010_MPCNSRELGER`, controle
+    ASP.NET do menu do portal) - usado como topo da hierarquia, com o
+    texto (comportamento original) como fallback automático. O card
+    "Auto" é um `<h3>` de styled-components sem nenhum id/data-testid
+    (confirmado por inspeção ao vivo) - texto é o único seletor possível.
+    """
+    # "Relatórios" só precisa de hover (não é clique, então não passa por
+    # _click_com_prioridade) - o `role="button"` do link não tem um name
+    # acessível único (reaproveitado por outros itens do menu superior),
+    # então o texto continua sendo o seletor mais confiável aqui.
+    page.get_by_text("Relatórios", exact=True).first.hover()
+    page.wait_for_timeout(500)  # tempo do dropdown CSS abrir antes do próximo elemento ficar clicável
+
+    with context.expect_page(timeout=15000) as popup_info:
+        _click_com_prioridade([
+            (f"id #{ID_LINK_RELATORIOS_GERENCIAIS}", lambda: page.locator(f"#{ID_LINK_RELATORIOS_GERENCIAIS}")),
+            ("texto 'Relatórios Gerenciais'", lambda: page.get_by_text("Relatórios Gerenciais", exact=True)),
+        ])
+    catalogo = popup_info.value
+    catalogo.wait_for_load_state("networkidle", timeout=20000)
+    catalogo.wait_for_timeout(5000)  # conteúdo do catálogo ainda renderiza após "networkidle" (SPA)
+
+    _click_com_prioridade([
+        ("texto 'Auto' (card)", lambda: catalogo.get_by_text("Auto", exact=False)),
+    ])
+    catalogo.wait_for_timeout(3000)
+    catalogo.wait_for_load_state("networkidle", timeout=15000)
+    catalogo.wait_for_timeout(2000)  # idem - conteúdo da seção "Auto" ainda renderiza após "networkidle"
+
+    return catalogo
+
+
+def _clicar_link_relatorio_e_abrir_popup(
+    context: BrowserContext, catalogo: Page, texto_link: str, *, indice: int = 0,
+) -> Page:
+    """
+    Clica no link de um relatório dentro do catálogo (card específico da
+    base) e retorna a Page da pop-up que abre com o dashboard final.
+
+    Alguns cards do catálogo têm DOIS elementos com o mesmo texto: o
+    título do card (não clicável, geralmente um heading) e, mais abaixo,
+    o link de fato. Quando `indice=1` (ver callers), tentamos primeiro
+    isolar o elemento com role="link" (mais confiável que contar posição
+    às cegas, já que só o link de verdade tem esse role) e só caímos para
+    ".nth(1)" por posição se o role não resolver sozinho.
+    """
+    if indice == 0:
+        tentativas = [
+            (f"texto '{texto_link}'", lambda: catalogo.get_by_text(texto_link, exact=True)),
+        ]
+    else:
+        tentativas = [
+            (f"role link '{texto_link}'", lambda: catalogo.get_by_role("link", name=texto_link, exact=True)),
+            (f"texto '{texto_link}' (posição {indice})", lambda: catalogo.get_by_text(texto_link, exact=True).nth(indice)),
+        ]
+
+    with context.expect_page(timeout=10000) as popup_info:
+        _click_com_prioridade(tentativas, force=True)
+    final_page = popup_info.value
+    catalogo.close()
+
+    # O dashboard final faz polling contínuo em segundo plano, então
+    # "networkidle" nunca conclui aqui - usamos espera fixa.
+    final_page.wait_for_load_state("domcontentloaded", timeout=20000)
+    final_page.wait_for_timeout(8000)
+    return final_page
+
+
+# --------------------------------------------------------------------------
 # Fluxo dedicado - base "numero_contratos" (Acompanhamento Veículos > Analítico)
 #
 # Este fluxo foi validado rodando de verdade contra o portal (não é mais um
@@ -96,45 +268,19 @@ def open_acompanhamento_veiculos_analitico(context: BrowserContext, page: Page) 
     Navega até o dashboard "Acompanhamento Veículos" e retorna a Page do
     Looker onde ele foi aberto (é uma nova aba/pop-up, não a mesma página).
 
-    Fluxo real confirmado:
-      1. O menu "Relatórios" só revela "Relatórios Gerenciais" com hover
-         (não com click).
-      2. Clicar em "Relatórios Gerenciais" abre uma pop-up nova com o
-         catálogo de relatórios do Looker (dashboards/371).
-      3. Dentro dessa pop-up, o card "🚗 Auto" (o texto vem com emoji e
-         espaço, por isso o match é parcial) leva ao dashboard "One Page -
-         Auto" (dashboards/513), na mesma aba.
-      4. O card "Acompanhamento Veículos" tem DOIS elementos com o mesmo
+    Fluxo real confirmado (ver `_abrir_catalogo_auto` para os 3 primeiros
+    passos, compartilhados com as outras 4 bases):
+      1. "Relatórios" (hover) > "Relatórios Gerenciais" (pop-up com o
+         catálogo) > card "Auto".
+      2. O card "Acompanhamento Veículos" tem DOIS elementos com o mesmo
          texto: o título do card (não clicável) e, mais abaixo, o link de
-         fato (por isso usamos `.nth(1)`, não `.first`).
-      5. Clicar nesse link abre OUTRA pop-up com o dashboard final
+         fato - `_clicar_link_relatorio_e_abrir_popup` tenta isolar pelo
+         role="link" primeiro, com posição (`.nth(1)`) como fallback.
+      3. Clicar nesse link abre OUTRA pop-up com o dashboard final
          (corp_consignado_embed::00050_producao).
     """
-    page.get_by_text("Relatórios", exact=True).first.hover()
-    page.wait_for_timeout(500)
-
-    with context.expect_page(timeout=15000) as popup_info:
-        page.get_by_text("Relatórios Gerenciais", exact=True).first.click()
-    catalogo = popup_info.value
-    catalogo.wait_for_load_state("networkidle", timeout=20000)
-    catalogo.wait_for_timeout(5000)
-
-    catalogo.get_by_text("Auto", exact=False).first.click()
-    catalogo.wait_for_timeout(3000)
-    catalogo.wait_for_load_state("networkidle", timeout=15000)
-    catalogo.wait_for_timeout(2000)
-
-    link_acompanhamento = catalogo.get_by_text("Acompanhamento Veículos", exact=True).nth(1)
-    with context.expect_page(timeout=10000) as popup_info2:
-        link_acompanhamento.click(force=True)
-    final_page = popup_info2.value
-    catalogo.close()
-
-    # O dashboard final faz polling contínuo em segundo plano, então
-    # "networkidle" nunca conclui aqui - usamos espera fixa.
-    final_page.wait_for_load_state("domcontentloaded", timeout=20000)
-    final_page.wait_for_timeout(8000)
-    return final_page
+    catalogo = _abrir_catalogo_auto(context, page)
+    return _clicar_link_relatorio_e_abrir_popup(context, catalogo, "Acompanhamento Veículos", indice=1)
 
 
 def apply_analitico_filters(final_page: Page, filtros: dict):
@@ -143,20 +289,33 @@ def apply_analitico_filters(final_page: Page, filtros: dict):
       - "Tipo Exibição" -> mantém somente a opção informada (ex: "Valor")
       - "Dt Relatorio Date" -> período relativo (ex: "Last 30 Days")
 
-    A aba é um link cujo texto acessível inclui um emoji (ex: "❗ Analítico"),
-    por isso usamos correspondência parcial via role em vez de texto exato.
+    A aba "Analítico" é um link cujo `href` contém o id fixo do dashboard
+    no Looker (`corp_consignado_embed::00087`, confirmado por inspeção ao
+    vivo) - muito mais estável que o texto do link (que inclui um emoji e
+    pode ser renomeado), usado como topo da hierarquia; o texto (via role,
+    comportamento original) fica como fallback.
     """
-    final_page.get_by_role("link", name="Analítico", exact=False).first.click()
+    _click_com_prioridade([
+        ("href do dashboard Analítico", lambda: final_page.locator(f'a[href*="{HREF_DASHBOARD_ANALITICO_NUMERO_CONTRATOS}"]')),
+        ("role link 'Analítico'", lambda: final_page.get_by_role("link", name="Analítico", exact=False)),
+    ])
     final_page.wait_for_timeout(5000)
 
-    # Abre o painel de filtros (botão "NN filters", o número varia por aba)
+    # Abre o painel de filtros (botão "NN filters", o número varia por
+    # aba) - texto é o único seletor disponível: o botão é um
+    # styled-components sem id/data-testid/aria-label (confirmado por
+    # inspeção ao vivo), mas "filters" é rótulo fixo do próprio Looker
+    # Studio, não editável pelo time.
     final_page.get_by_text("filters", exact=False).first.click()
     final_page.wait_for_timeout(1500)
 
     # --- Tipo Exibição ---
     # O chip de valor do filtro mostra o texto atual (ex: "is Qtde" ou
-    # "is Valor"). "Tipo Exibição" é sempre o primeiro filtro do painel,
-    # então o primeiro chip que começa com "is " é o dele.
+    # "is Valor") - tem um `id`, mas é um UUID gerado por instância de
+    # render (confirmado por inspeção ao vivo: muda a cada carregamento),
+    # não um id fixo reaproveitável. "Tipo Exibição" é sempre o primeiro
+    # filtro do painel, então o primeiro chip que começa com "is " é o
+    # dele - continua sendo o seletor mais confiável disponível aqui.
     final_page.get_by_text(re.compile(r"^is "), exact=False).first.click()
     final_page.wait_for_timeout(500)
     final_page.get_by_text(filtros["tipo_exibicao"], exact=True).click()
@@ -176,22 +335,52 @@ def apply_analitico_filters(final_page: Page, filtros: dict):
 
 
 def update_report_data(final_page: Page):
-    """Clica no botão 'Update' para atualizar os dados do relatório."""
+    """
+    Clica no botão 'Update' para atualizar os dados do relatório. Já usa
+    `aria-labelledby="page-freshness-indicator"` - atributo semântico
+    fixo confirmado por inspeção ao vivo, sem dependência de texto -
+    topo da hierarquia, nenhuma mudança necessária.
+    """
     final_page.locator('button[aria-labelledby="page-freshness-indicator"]').click()
-    # espera fixa: networkidle não é confiável nesse dashboard (polling contínuo)
+    # espera fixa: networkidle não é confiável nesse dashboard (polling
+    # contínuo em segundo plano) - não há uma condição específica de DOM
+    # que sinalize "dados atualizados", então o sleep aqui é necessário.
     final_page.wait_for_timeout(5000)
 
 
-def _find_tile_actions_button(final_page: Page, near: Locator) -> Locator:
+def _find_tile_actions_button(final_page: Page, near: Locator, titulo_tile: str | None = None) -> Locator:
     """
-    Encontra o botão "Tile actions" (3 pontinhos) mais próximo verticalmente
-    do elemento `near`. O mesmo ícone svg é reaproveitado ~40x na página
-    (cada coluna do crosstab tem um mini-ícone igual no cabeçalho, e há um
-    menu global de dashboard também com o mesmo ícone) - por isso filtramos
-    por altura do botão (os de tile ficam com 24px, diferente dos 36px do
-    menu global e dos ~21px dos ícones de coluna) e pegamos o mais próximo
-    em Y do elemento de referência.
+    Encontra o botão "Tile actions" (3 pontinhos) de um tile específico.
+
+    Hierarquia de tentativas:
+      1. Quando `titulo_tile` é informado (a referência usada para rolar
+         até o tile É plausivelmente o próprio título dele - caso de
+         "Analítico"/`secao_tabela`, que ficam numa faixa de título acima
+         da tabela): tenta por `role="button"` + `aria-label` contendo
+         `titulo_tile` (confirmado por inspeção ao vivo: o botão real tem
+         `aria-label="{Título do tile} - Tile actions"`) - atributo
+         semântico, não depende de posição na tela.
+      2. Heurística geométrica original: o ícone svg (`ICON_MORE_VERT_PATH`)
+         é reaproveitado ~40x na página (cada coluna do crosstab tem um
+         mini-ícone igual no cabeçalho, e há um menu global de dashboard
+         também com o mesmo ícone) - filtramos por altura do botão (os de
+         tile ficam com 24px, diferente dos 36px do menu global e dos
+         ~21px dos ícones de coluna) e pegamos o mais próximo em Y do
+         elemento `near`. Usada sempre que não há `titulo_tile` confiável
+         (ex: SLA/Carteira, onde `near` é um cabeçalho de coluna, não o
+         título do tile) ou como fallback se a tentativa 1 não achar nada.
     """
+    if titulo_tile:
+        candidato = final_page.get_by_role(
+            "button", name=re.compile(re.escape(titulo_tile), re.IGNORECASE),
+        )
+        if candidato.count() > 0:
+            return candidato.first
+        logger.warning(
+            "Botão 'Tile actions' não encontrado por aria-label contendo '%s' - "
+            "usando heurística geométrica (posição) como fallback.", titulo_tile,
+        )
+
     near_box = near.bounding_box()
     candidatos = final_page.locator(f'button:has(svg path[d="{ICON_MORE_VERT_PATH}"])')
     melhor = None
@@ -215,6 +404,19 @@ def _complete_download_dialog(final_page: Page, base_id: str, download_timeout_m
     opções de exportação completa antes de baixar. Compartilhado por todas
     as bases que usam este mesmo fluxo de download do Looker.
 
+    O modal de export é chrome fixo do Looker (mesma estrutura em todas as
+    5 bases, não depende do conteúdo do relatório) - o combobox de formato
+    e o botão final "Download" têm id fixo confirmado por inspeção ao vivo
+    (`#listbox-input-qr-export-modal-format`, `#qr-export-modal-download`),
+    usados como topo da hierarquia com o comportamento original (role) como
+    fallback. As demais opções do modal ("Download data", "Excel
+    Spreadsheet...", "Advanced data options", "With visualizations options
+    applied", "Formatted", "All results") são `<span>`/`<legend>` de
+    styled-components sem nenhum id/data-testid (confirmado por inspeção
+    ao vivo) - texto é o único seletor possível, mas são rótulos fixos da
+    INTERFACE do Looker (Google), não do relatório, então já são
+    razoavelmente estáveis.
+
     `download_timeout_ms` pode ser aumentado para bases com volumes maiores
     de dados (ex: Carteira e Parceiros, que baixa o ano inteiro) - o Looker
     demora mais para gerar o arquivo antes do download começar.
@@ -222,10 +424,10 @@ def _complete_download_dialog(final_page: Page, base_id: str, download_timeout_m
     final_page.get_by_text("Download data", exact=True).click()
     final_page.wait_for_timeout(1500)
 
-    # O combobox de formato parece usar Shadow DOM fechado: com ele fechado
-    # não dá pra ler nem clicar no valor atual ("CSV") por texto. Precisa
-    # abrir a lista primeiro - só aí as opções viram texto normal acessível.
-    final_page.get_by_role("combobox").first.click()
+    _click_com_prioridade([
+        (f"id #{ID_COMBOBOX_FORMATO_EXPORT}", lambda: final_page.locator(f"#{ID_COMBOBOX_FORMATO_EXPORT}")),
+        ("role combobox (formato)", lambda: final_page.get_by_role("combobox")),
+    ])
     final_page.wait_for_timeout(500)
     final_page.get_by_text("Excel Spreadsheet (Excel 2007 or later)", exact=True).click()
     final_page.wait_for_timeout(300)
@@ -245,7 +447,10 @@ def _complete_download_dialog(final_page: Page, base_id: str, download_timeout_m
     final_page.get_by_text("All results", exact=True).click()
 
     with final_page.expect_download(timeout=download_timeout_ms) as download_info:
-        final_page.get_by_role("button", name="Download", exact=True).click()
+        _click_com_prioridade([
+            (f"id #{ID_BOTAO_DOWNLOAD_EXPORT}", lambda: final_page.locator(f"#{ID_BOTAO_DOWNLOAD_EXPORT}")),
+            ("role button 'Download'", lambda: final_page.get_by_role("button", name="Download", exact=True)),
+        ])
 
     download = download_info.value
     dest_path = config.DOWNLOAD_DIR / f"{base_id}_{int(time.time())}.xlsx"
@@ -258,12 +463,16 @@ def download_analitico_spreadsheet(final_page: Page, base_id: str) -> Path:
     """
     Rola até a planilha "Analítico", abre o menu de 3 pontinhos daquela
     planilha (fica quase invisível até o hover) e completa o download.
+    Passa "Analítico" como dica de título para `_find_tile_actions_button`
+    tentar primeiro por aria-label (o tile real chama-se "Digitação
+    Analítico", então "Analítico" bate como substring) antes de cair para
+    a heurística geométrica.
     """
     analitico_section = final_page.get_by_text("Analítico", exact=True).last
     analitico_section.scroll_into_view_if_needed()
     final_page.wait_for_timeout(1000)
 
-    tile_button = _find_tile_actions_button(final_page, analitico_section)
+    tile_button = _find_tile_actions_button(final_page, analitico_section, titulo_tile="Analítico")
     tile_button.hover()
     final_page.wait_for_timeout(300)
     tile_button.click(force=True)
@@ -290,35 +499,14 @@ def download_numero_contratos_report(context: BrowserContext, page: Page, base: 
 def open_sla_analitico(context: BrowserContext, page: Page, base: dict) -> Page:
     """
     Navega até o dashboard "SLA Última Atuação Comercial - Analítico":
-    Relatórios (hover) > Relatórios Gerenciais (abre pop-up com o catálogo)
-    > card "Auto" > link "SLA - Última atuação comercial - Analítico"
-    (dentro do card "SLA - Última atuação da loja") - abre outra pop-up já
-    na aba certa ("SLA Analítico"), com o filtro "Referencia Month" já em
-    "is this month" por padrão.
+    `_abrir_catalogo_auto` (Relatórios > Relatórios Gerenciais > card
+    "Auto") + link "SLA - Última atuação comercial - Analítico" (dentro do
+    card "SLA - Última atuação da loja") - abre outra pop-up já na aba
+    certa ("SLA Analítico"), com o filtro "Referencia Month" já em "is
+    this month" por padrão.
     """
-    page.get_by_text("Relatórios", exact=True).first.hover()
-    page.wait_for_timeout(500)
-
-    with context.expect_page(timeout=15000) as popup_info:
-        page.get_by_text("Relatórios Gerenciais", exact=True).first.click()
-    catalogo = popup_info.value
-    catalogo.wait_for_load_state("networkidle", timeout=20000)
-    catalogo.wait_for_timeout(5000)
-
-    catalogo.get_by_text("Auto", exact=False).first.click()
-    catalogo.wait_for_timeout(3000)
-    catalogo.wait_for_load_state("networkidle", timeout=15000)
-    catalogo.wait_for_timeout(2000)
-
-    link = catalogo.get_by_text(base["link_relatorio"], exact=True).first
-    with context.expect_page(timeout=10000) as popup_info2:
-        link.click(force=True)
-    final_page = popup_info2.value
-    catalogo.close()
-
-    final_page.wait_for_load_state("domcontentloaded", timeout=20000)
-    final_page.wait_for_timeout(8000)
-    return final_page
+    catalogo = _abrir_catalogo_auto(context, page)
+    return _clicar_link_relatorio_e_abrir_popup(context, catalogo, base["link_relatorio"])
 
 
 def verify_referencia_month_filter(final_page: Page):
@@ -349,6 +537,13 @@ def download_sla_analitico_spreadsheet(final_page: Page, base_id: str) -> Path:
     Número de Contratos), então usar o título da página como referência
     pega o botão errado (uma tabela de navegação interna escondida). A
     própria coluna da tabela funciona como ponto de referência correto.
+
+    Sem `titulo_tile`: "Cnpj Da Loja" é um cabeçalho de COLUNA, não o
+    título do tile - não faz sentido tentar aria-label com esse texto
+    (sempre falharia e só geraria log de aviso falso a cada execução) -
+    mantido na heurística geométrica, já baseada em atributo (svg path do
+    ícone) + posição, que é a estratégia correta quando não há faixa de
+    título disponível para usar como sinal semântico.
     """
     referencia = final_page.get_by_text("Cnpj Da Loja", exact=True).first
     referencia.scroll_into_view_if_needed(timeout=90000)
@@ -405,34 +600,13 @@ def deve_usar_janela_curta_safra_mes(hoje: date | None = None) -> bool:
 
 def open_resumo_parceiro(context: BrowserContext, page: Page, base: dict) -> Page:
     """
-    Navega até o dashboard "Apuração Parceiro - Resumo": Relatórios (hover)
-    > Relatórios Gerenciais (abre pop-up com o catálogo) > card "Auto" >
-    link "Resumo Apuração Parceiro 2.0" (dentro do card "Apuração Parceiro
-    2.0") - abre outra pop-up já na aba "Resumo".
+    Navega até o dashboard "Apuração Parceiro - Resumo": `_abrir_catalogo_auto`
+    (Relatórios > Relatórios Gerenciais > card "Auto") + link "Resumo
+    Apuração Parceiro 2.0" (dentro do card "Apuração Parceiro 2.0") - abre
+    outra pop-up já na aba "Resumo".
     """
-    page.get_by_text("Relatórios", exact=True).first.hover()
-    page.wait_for_timeout(500)
-
-    with context.expect_page(timeout=15000) as popup_info:
-        page.get_by_text("Relatórios Gerenciais", exact=True).first.click()
-    catalogo = popup_info.value
-    catalogo.wait_for_load_state("networkidle", timeout=20000)
-    catalogo.wait_for_timeout(5000)
-
-    catalogo.get_by_text("Auto", exact=False).first.click()
-    catalogo.wait_for_timeout(3000)
-    catalogo.wait_for_load_state("networkidle", timeout=15000)
-    catalogo.wait_for_timeout(2000)
-
-    link = catalogo.get_by_text(base["link_relatorio"], exact=True).first
-    with context.expect_page(timeout=10000) as popup_info2:
-        link.click(force=True)
-    final_page = popup_info2.value
-    catalogo.close()
-
-    final_page.wait_for_load_state("domcontentloaded", timeout=20000)
-    final_page.wait_for_timeout(8000)
-    return final_page
+    catalogo = _abrir_catalogo_auto(context, page)
+    return _clicar_link_relatorio_e_abrir_popup(context, catalogo, base["link_relatorio"])
 
 
 def apply_safra_mes_filter(final_page: Page):
@@ -476,13 +650,15 @@ def download_bloco_metas_spreadsheet(final_page: Page, base_id: str, secao_tabel
     """
     Rola até a seção "Bloco de Metas - Por Filial" (faixa de título cinza
     acima da tabela, igual ao padrão de "Analítico" em Número de
-    Contratos) e completa o download.
+    Contratos) e completa o download. Passa `secao_tabela` como dica de
+    título para `_find_tile_actions_button` tentar primeiro por
+    aria-label (mesmo padrão de `download_analitico_spreadsheet`).
     """
     secao = final_page.get_by_text(secao_tabela, exact=True).last
     secao.scroll_into_view_if_needed()
     final_page.wait_for_timeout(1000)
 
-    tile_button = _find_tile_actions_button(final_page, secao)
+    tile_button = _find_tile_actions_button(final_page, secao, titulo_tile=secao_tabela)
     tile_button.hover()
     final_page.wait_for_timeout(300)
     tile_button.click(force=True)
@@ -508,36 +684,15 @@ def download_meta_financiamento_seguro_report(context: BrowserContext, page: Pag
 
 def open_painel_carteira(context: BrowserContext, page: Page, base: dict) -> Page:
     """
-    Navega até o dashboard "Painel Carteira": Relatórios (hover) >
-    Relatórios Gerenciais (abre pop-up com o catálogo) > card "Auto" > link
-    "Carteira" (dentro do card "Carteira") - abre outra pop-up já na tabela
-    certa (não tem abas, diferente das outras bases).
+    Navega até o dashboard "Painel Carteira": `_abrir_catalogo_auto`
+    (Relatórios > Relatórios Gerenciais > card "Auto") + link "Carteira"
+    (dentro do card "Carteira") - abre outra pop-up já na tabela certa
+    (não tem abas, diferente das outras bases). O card "Carteira" tem
+    DOIS elementos com o mesmo texto (título + link de fato), mesmo caso
+    de "Acompanhamento Veículos" - ver `_clicar_link_relatorio_e_abrir_popup`.
     """
-    page.get_by_text("Relatórios", exact=True).first.hover()
-    page.wait_for_timeout(500)
-
-    with context.expect_page(timeout=15000) as popup_info:
-        page.get_by_text("Relatórios Gerenciais", exact=True).first.click()
-    catalogo = popup_info.value
-    catalogo.wait_for_load_state("networkidle", timeout=20000)
-    catalogo.wait_for_timeout(5000)
-
-    catalogo.get_by_text("Auto", exact=False).first.click()
-    catalogo.wait_for_timeout(3000)
-    catalogo.wait_for_load_state("networkidle", timeout=15000)
-    catalogo.wait_for_timeout(2000)
-
-    # O card "Carteira" tem DOIS elementos com o mesmo texto: o título do
-    # card (H2, não clicável) e o link de fato (SPAN) - usamos `.nth(1)`.
-    link = catalogo.get_by_text(base["link_relatorio"], exact=True).nth(1)
-    with context.expect_page(timeout=10000) as popup_info2:
-        link.click(force=True)
-    final_page = popup_info2.value
-    catalogo.close()
-
-    final_page.wait_for_load_state("domcontentloaded", timeout=20000)
-    final_page.wait_for_timeout(8000)
-    return final_page
+    catalogo = _abrir_catalogo_auto(context, page)
+    return _clicar_link_relatorio_e_abrir_popup(context, catalogo, base["link_relatorio"], indice=1)
 
 
 def apply_referencia_year_filter(final_page: Page):
@@ -567,10 +722,12 @@ def download_carteira_spreadsheet(final_page: Page, base_id: str) -> Path:
     """
     Localiza o botão "Tile actions" da tabela usando o cabeçalho de coluna
     "Cnpj Da Loja" como referência (esse relatório não tem uma faixa de
-    título separada acima da tabela, mesma situação de Dias sem Produção).
-    O timeout de download é maior (240s) porque baixa o ano inteiro - em
-    teste real o Looker levou entre 120s e 180s para gerar o arquivo, então
-    120s (usado antes) não é margem suficiente.
+    título separada acima da tabela, mesma situação de Dias sem Produção -
+    sem `titulo_tile`, mesmo motivo documentado em
+    `download_sla_analitico_spreadsheet`). O timeout de download é maior
+    (240s) porque baixa o ano inteiro - em teste real o Looker levou entre
+    120s e 180s para gerar o arquivo, então 120s (usado antes) não é
+    margem suficiente.
     """
     referencia = final_page.get_by_text("Cnpj Da Loja", exact=True).first
     referencia.scroll_into_view_if_needed(timeout=90000)
@@ -621,49 +778,29 @@ def download_carteira_parceiros_report(context: BrowserContext, page: Page, base
 
 def open_apuracao_comissao_a_vista(context: BrowserContext, page: Page, base: dict) -> Page:
     """
-    Navega até o dashboard "Apuração Comissão à Vista": Relatórios (hover) >
-    Relatórios Gerenciais (abre pop-up com o catálogo) > card "Auto" > link
-    "Apuração Comissão à Vista" (dentro do card "Apuração Parceiro 2.0") -
-    abre outra pop-up com o dashboard final. Mesma estrutura de navegação
-    de `open_resumo_parceiro` (mesmo card no catálogo), só muda o link
+    Navega até o dashboard "Apuração Comissão à Vista": `_abrir_catalogo_auto`
+    (Relatórios > Relatórios Gerenciais > card "Auto") + link "Apuração
+    Comissão à Vista" (dentro do card "Apuração Parceiro 2.0") - abre
+    outra pop-up com o dashboard final. Mesma estrutura de navegação de
+    `open_resumo_parceiro` (mesmo card no catálogo), só muda o link
     clicado dentro dele.
     """
-    page.get_by_text("Relatórios", exact=True).first.hover()
-    page.wait_for_timeout(500)
-
-    with context.expect_page(timeout=15000) as popup_info:
-        page.get_by_text("Relatórios Gerenciais", exact=True).first.click()
-    catalogo = popup_info.value
-    catalogo.wait_for_load_state("networkidle", timeout=20000)
-    catalogo.wait_for_timeout(5000)
-
-    catalogo.get_by_text("Auto", exact=False).first.click()
-    catalogo.wait_for_timeout(3000)
-    catalogo.wait_for_load_state("networkidle", timeout=15000)
-    catalogo.wait_for_timeout(2000)
-
-    link = catalogo.get_by_text(base["link_relatorio"], exact=True).first
-    with context.expect_page(timeout=10000) as popup_info2:
-        link.click(force=True)
-    final_page = popup_info2.value
-    catalogo.close()
-
-    final_page.wait_for_load_state("domcontentloaded", timeout=20000)
-    final_page.wait_for_timeout(8000)
-    return final_page
+    catalogo = _abrir_catalogo_auto(context, page)
+    return _clicar_link_relatorio_e_abrir_popup(context, catalogo, base["link_relatorio"])
 
 
 def download_comissao_a_vista_spreadsheet(final_page: Page, base_id: str, secao_tabela: str) -> Path:
     """
     Rola até a seção/tabela do relatório (referência configurada em
     `secao_tabela`, config.py) e completa o download - mesmo padrão de
-    `download_bloco_metas_spreadsheet`.
+    `download_bloco_metas_spreadsheet`, incluindo a dica de título para
+    `_find_tile_actions_button`.
     """
     secao = final_page.get_by_text(secao_tabela, exact=True).last
     secao.scroll_into_view_if_needed()
     final_page.wait_for_timeout(1000)
 
-    tile_button = _find_tile_actions_button(final_page, secao)
+    tile_button = _find_tile_actions_button(final_page, secao, titulo_tile=secao_tabela)
     tile_button.hover()
     final_page.wait_for_timeout(300)
     tile_button.click(force=True)
