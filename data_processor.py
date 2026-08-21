@@ -32,37 +32,42 @@ VERMELHO_SEM_DADOS = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_
 
 HISTORICO_COLUNAS = ["Data/Hora", "Base", "Linhas baixadas", "Linhas novas", "Linhas totais (destino)", "Observação"]
 
-TENTATIVAS_ARQUIVO_BLOQUEADO = 5
-ESPERA_ARQUIVO_BLOQUEADO_SEGUNDOS = 3
+TENTATIVAS_ARQUIVO_BLOQUEADO = 12
+ESPERA_ARQUIVO_BLOQUEADO_SEGUNDOS = 10  # total ~2min de espera - confirmado ao vivo em 21/08/2026 que o
+                                         # OneDrive pode segurar um arquivo bloqueado por mais de 15s
+                                         # depois de gravações rápidas e sucessivas nele
 
 
 def _com_retry_arquivo_bloqueado(
-    path: Path, salvar: Callable[[], None],
+    path: Path, acao: Callable[[], object],
     *, tentativas: int = TENTATIVAS_ARQUIVO_BLOQUEADO, espera_segundos: int = ESPERA_ARQUIVO_BLOQUEADO_SEGUNDOS,
-) -> None:
+) -> object:
     """
-    Executa `salvar()` (um `DataFrame.to_excel(...)` ou `Workbook.save(...)`)
-    com retry em caso de arquivo bloqueado - situação comum em produção já
-    que as planilhas ficam em pastas do OneDrive: alguém pode estar com o
-    arquivo aberto no Excel, ou o próprio OneDrive pode estar no meio de
-    uma sincronização quando a execução tenta gravar. Sem isso, qualquer
-    um dos dois cenários derrubava a base inteira com um `PermissionError`
-    (WinError 32) sem chance de recuperação, mesmo sendo uma condição
-    tipicamente temporária.
+    Executa `acao()` - um `DataFrame.to_excel(...)`, `Workbook.save(...)`
+    OU `pd.read_excel(...)` - com retry em caso de arquivo bloqueado,
+    situação comum em produção já que as planilhas ficam em pastas do
+    OneDrive: alguém pode estar com o arquivo aberto no Excel, ou o
+    próprio OneDrive pode estar no meio de uma sincronização quando a
+    execução tenta ler OU gravar. Sem isso, qualquer um dos dois cenários
+    derrubava a base inteira com um `PermissionError` (WinError 32) sem
+    chance de recuperação, mesmo sendo uma condição tipicamente
+    temporária (confirmado ao vivo em 21/08/2026: uma leitura de
+    `pd.read_excel` logo após o arquivo ser renomeado/reescrito pegou o
+    OneDrive ainda sincronizando).
 
     Tenta `tentativas` vezes com espera fixa entre elas; na última
     tentativa, deixa o erro se propagar com uma mensagem clara sobre a
     causa provável e qual arquivo fechar, em vez do `PermissionError` cru
-    do openpyxl/pandas.
+    do openpyxl/pandas. Retorna o que `acao()` retornar (útil para leitura;
+    `None` para as gravações, que ninguém usa o retorno mesmo).
     """
     for tentativa in range(1, tentativas + 1):
         try:
-            salvar()
-            return
+            return acao()
         except PermissionError:
             if tentativa == tentativas:
                 raise PermissionError(
-                    f"Não foi possível salvar '{path}' após {tentativas} tentativas - "
+                    f"Não foi possível acessar '{path}' após {tentativas} tentativas - "
                     "o arquivo parece estar aberto no Excel ou o OneDrive ainda está "
                     "sincronizando. Feche a planilha (ou aguarde a sincronização) e "
                     "rode a base de novo."
@@ -180,6 +185,7 @@ def _marcar_linhas_novas_e_editadas(path: Path, df: pd.DataFrame, chave, df_ante
 
     wb = load_workbook(path)
     ws = wb.active
+    ws.title = ws.title.lower()  # nome da aba sempre minúsculo, independente de como veio
     mudou_algo = False
     for offset, (k, linha_atual) in enumerate(zip(chave_serie, linha_atual_serie), start=2):  # linha 1 = cabeçalho
         if k not in linha_anterior_por_chave:
@@ -217,7 +223,7 @@ def _acumular_planilha(
     Retorna (df a gravar, versão anterior - usada em seguida por
     `_marcar_linhas_novas_e_editadas` para a marcação de cor).
     """
-    df_anterior = pd.read_excel(caminho) if caminho.exists() else None
+    df_anterior = _com_retry_arquivo_bloqueado(caminho, lambda: pd.read_excel(caminho)) if caminho.exists() else None
 
     if df_novo.empty:
         df_final = df_anterior if df_anterior is not None else df_novo
@@ -251,7 +257,7 @@ def _acumular_e_colorir_origem(
     chaves genuinamente novas nesta execução - usada no histórico).
     """
     df_final, df_anterior = _acumular_planilha(origem_path, df_previa, chave)
-    _com_retry_arquivo_bloqueado(origem_path, lambda: df_final.to_excel(origem_path, index=False))
+    _com_retry_arquivo_bloqueado(origem_path, lambda: df_final.to_excel(origem_path, index=False, sheet_name="sheet1"))
     if aplicar_autofiltro:
         _apply_excel_autofilter(origem_path)
     _marcar_linhas_novas_e_editadas(origem_path, df_final, chave, df_anterior)
@@ -316,6 +322,7 @@ def _apply_excel_autofilter(path: Path):
     """Adiciona o filtro (AutoFilter) do Excel em todas as colunas da planilha final."""
     wb = load_workbook(path)
     ws = wb.active
+    ws.title = ws.title.lower()  # nome da aba sempre minúsculo, independente de como veio
     ws.auto_filter.ref = ws.dimensions
     _com_retry_arquivo_bloqueado(path, lambda: wb.save(path))
 
@@ -393,14 +400,14 @@ def _process_numero_contratos(downloaded_path: Path, base: dict) -> Path:
     previa_path = config.caminho_previa_numero_contratos()
     previa_path.parent.mkdir(parents=True, exist_ok=True)
 
-    df_previa_existente = pd.read_excel(previa_path) if previa_path.exists() else pd.DataFrame(columns=df_tratado.columns)
+    df_previa_existente = _com_retry_arquivo_bloqueado(previa_path, lambda: pd.read_excel(previa_path)) if previa_path.exists() else pd.DataFrame(columns=df_tratado.columns)
     df_previa_existente = _apenas_mes_atual(df_previa_existente)  # descarta sobra de mês anterior já acumulada
 
     df_previa = pd.concat([df_previa_existente, df_tratado], ignore_index=True)
     df_previa = df_previa.drop_duplicates(subset=chave, keep="last")
     df_previa = _ordenar_por_data(df_previa)
 
-    _com_retry_arquivo_bloqueado(previa_path, lambda: df_previa.to_excel(previa_path, index=False))
+    _com_retry_arquivo_bloqueado(previa_path, lambda: df_previa.to_excel(previa_path, index=False, sheet_name="sheet1"))
     if base["regras"].get("aplicar_autofiltro_excel"):
         _apply_excel_autofilter(previa_path)
     _marcar_linhas_novas_e_editadas(previa_path, df_previa, chave, df_previa_existente)
@@ -415,7 +422,7 @@ def _process_numero_contratos(downloaded_path: Path, base: dict) -> Path:
     df_final, df_origem_anterior = _acumular_planilha(origem_path, df_previa, chave)
     df_final = _apenas_janela_trimestre(df_final)  # descarta contratos com mais de 90 dias
     df_final = _ordenar_por_data(df_final)
-    _com_retry_arquivo_bloqueado(origem_path, lambda: df_final.to_excel(origem_path, index=False))
+    _com_retry_arquivo_bloqueado(origem_path, lambda: df_final.to_excel(origem_path, index=False, sheet_name="sheet1"))
     if autofiltro:
         _apply_excel_autofilter(origem_path)
     _marcar_linhas_novas_e_editadas(origem_path, df_final, chave, df_origem_anterior)
@@ -470,7 +477,7 @@ def _process_dias_sem_producao(downloaded_path: Path, base: dict) -> Path:
     previa_path.parent.mkdir(parents=True, exist_ok=True)
     df_previa, df_previa_anterior = _acumular_planilha(previa_path, df_tratado, chave)
 
-    _com_retry_arquivo_bloqueado(previa_path, lambda: df_previa.to_excel(previa_path, index=False))
+    _com_retry_arquivo_bloqueado(previa_path, lambda: df_previa.to_excel(previa_path, index=False, sheet_name="sheet1"))
     if base["regras"].get("aplicar_autofiltro_excel"):
         _apply_excel_autofilter(previa_path)
     _marcar_linhas_novas_e_editadas(previa_path, df_previa, chave, df_previa_anterior)
@@ -528,7 +535,7 @@ def _process_meta_financiamento_seguro(downloaded_path: Path, base: dict) -> Pat
     previa_path.parent.mkdir(parents=True, exist_ok=True)
     df_previa, df_previa_anterior = _acumular_planilha(previa_path, df_tratado, chave)
 
-    _com_retry_arquivo_bloqueado(previa_path, lambda: df_previa.to_excel(previa_path, index=False))
+    _com_retry_arquivo_bloqueado(previa_path, lambda: df_previa.to_excel(previa_path, index=False, sheet_name="sheet1"))
     if base["regras"].get("aplicar_autofiltro_excel"):
         _apply_excel_autofilter(previa_path)
     _marcar_linhas_novas_e_editadas(previa_path, df_previa, chave, df_previa_anterior)
@@ -627,14 +634,14 @@ def _process_carteira_parceiros(downloaded_path: Path, base: dict) -> Path:
     previa_path = config.caminho_previa_carteira_parceiros()
     previa_path.parent.mkdir(parents=True, exist_ok=True)
 
-    df_previa_existente = pd.read_excel(previa_path) if previa_path.exists() else pd.DataFrame(columns=df_tratado.columns)
+    df_previa_existente = _com_retry_arquivo_bloqueado(previa_path, lambda: pd.read_excel(previa_path)) if previa_path.exists() else pd.DataFrame(columns=df_tratado.columns)
     df_previa_existente = _apenas_mes_atual(df_previa_existente)  # descarta sobra de mês anterior já acumulada
 
     df_previa = pd.concat([df_previa_existente, _apenas_mes_atual(df_tratado)], ignore_index=True)
     df_previa = df_previa.drop_duplicates(subset=CHAVE_UNICA_CARTEIRA_PARCEIROS, keep="last")
     df_previa = _ordenar_por_anomes(df_previa)
 
-    _com_retry_arquivo_bloqueado(previa_path, lambda: df_previa.to_excel(previa_path, index=False))
+    _com_retry_arquivo_bloqueado(previa_path, lambda: df_previa.to_excel(previa_path, index=False, sheet_name="sheet1"))
     if base["regras"].get("aplicar_autofiltro_excel"):
         _apply_excel_autofilter(previa_path)
     _marcar_linhas_novas_e_editadas(previa_path, df_previa, CHAVE_UNICA_CARTEIRA_PARCEIROS, df_previa_existente)
@@ -678,7 +685,7 @@ def _process_carteira_parceiros(downloaded_path: Path, base: dict) -> Path:
         df_final = df_final[colunas_atuais + colunas_legado]
         df_final = _ordenar_por_anomes(df_final)
 
-        _com_retry_arquivo_bloqueado(origem_path, lambda: df_final.to_excel(origem_path, index=False))
+        _com_retry_arquivo_bloqueado(origem_path, lambda: df_final.to_excel(origem_path, index=False, sheet_name="sheet1"))
         if autofiltro:
             _apply_excel_autofilter(origem_path)
         _marcar_linhas_novas_e_editadas(origem_path, df_final, CHAVE_UNICA_CARTEIRA_PARCEIROS, df_anterior)
@@ -831,9 +838,10 @@ def _acumular_origem_comissao_a_vista(
     sem contar a própria linha de totais).
     """
     if not path.exists():
-        _com_retry_arquivo_bloqueado(path, lambda: df_previa.to_excel(path, index=False))
+        _com_retry_arquivo_bloqueado(path, lambda: df_previa.to_excel(path, index=False, sheet_name="sheet1"))
         wb = load_workbook(path)
         ws = wb.active
+        ws.title = ws.title.lower()  # nome da aba sempre minúsculo, independente de como veio
         if len(df_previa) >= 1:
             totais = _calcular_linha_totais(df_previa)
             ws.append([_valor_para_excel(totais.get(c)) for c in df_previa.columns])
@@ -849,7 +857,7 @@ def _acumular_origem_comissao_a_vista(
         logger.info("Planilha '%s' criada (primeira execução): %s (%d linhas)", nome_planilha, path, len(df_previa))
         return len(df_previa), len(df_previa)
 
-    df_existente_completo = pd.read_excel(path)
+    df_existente_completo = _com_retry_arquivo_bloqueado(path, lambda: pd.read_excel(path))
     df_existente, posicao_totais = _separar_linha_totais(df_existente_completo)
     linha_totais_excel = posicao_totais + 2 if posicao_totais is not None else None  # +2: 0-based -> 1-based, +1 pelo cabeçalho
 
@@ -898,6 +906,7 @@ def _acumular_origem_comissao_a_vista(
 
     wb = load_workbook(path)
     ws = wb.active
+    ws.title = ws.title.lower()  # nome da aba sempre minúsculo, independente de como veio
 
     # Referência de formatação: sempre a 1ª linha de dado real (linha 2) -
     # continua válida mesmo depois de remover a linha de totais de
@@ -1033,7 +1042,7 @@ def _process_comissao_a_vista(downloaded_path: Path, base: dict) -> Path:
         return origem_path
 
     # --- Prévia: reescrita + cor recalculada a cada execução (igual as outras 4 bases) ---
-    df_previa_anterior = pd.read_excel(previa_path) if previa_path.exists() else None
+    df_previa_anterior = _com_retry_arquivo_bloqueado(previa_path, lambda: pd.read_excel(previa_path)) if previa_path.exists() else None
     if df_previa_anterior is not None and not df_previa_anterior.empty:
         faltando = [c for c in df_previa_anterior.columns if c not in df_novo.columns]
         extras = [c for c in df_novo.columns if c not in df_previa_anterior.columns]
@@ -1050,7 +1059,7 @@ def _process_comissao_a_vista(downloaded_path: Path, base: dict) -> Path:
     else:
         df_previa_final = df_novo
 
-    _com_retry_arquivo_bloqueado(previa_path, lambda: df_previa_final.to_excel(previa_path, index=False))
+    _com_retry_arquivo_bloqueado(previa_path, lambda: df_previa_final.to_excel(previa_path, index=False, sheet_name="sheet1"))
     if autofiltro:
         _apply_excel_autofilter(previa_path)
     _marcar_linhas_novas_e_editadas(previa_path, df_previa_final, chave, df_previa_anterior)
