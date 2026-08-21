@@ -390,3 +390,29 @@ def get_base_by_id(base_id: str) -> dict:
         if base["id"] == base_id:
             return base
     raise ValueError(f"Base '{base_id}' não encontrada em config.py")
+
+
+def validar_ambiente() -> None:
+    """
+    Confere que as variáveis de ambiente obrigatórias (credenciais do
+    portal C6) estão presentes antes de a execução começar. Sem essa
+    checagem, `LOOKER_USER`/`LOOKER_PASSWORD` faltando no `.env` só dava
+    erro bem mais tarde, dentro do Playwright (`page.fill(None)`), com uma
+    mensagem técnica sem relação óbvia com a causa real - falha rápido e
+    claro aqui em vez disso.
+
+    Chamada uma vez no início de `main.main()`, antes de abrir qualquer
+    navegador ou tocar em qualquer planilha.
+    """
+    faltando = [
+        nome for nome, valor in {
+            "LOOKER_USER": LOOKER_USER,
+            "LOOKER_PASSWORD": LOOKER_PASSWORD,
+        }.items()
+        if not valor
+    ]
+    if faltando:
+        raise RuntimeError(
+            "Variável(is) de ambiente obrigatória(s) ausente(s) no .env: "
+            f"{', '.join(faltando)}. Veja .env.example para o formato esperado."
+        )

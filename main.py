@@ -11,6 +11,9 @@ Uso:
 
 import argparse
 import logging
+import os
+import time
+from contextlib import contextmanager
 from pathlib import Path
 
 import config
@@ -27,6 +30,59 @@ logging.basicConfig(
     ],
 )
 logger = logging.getLogger("main")
+
+LOCK_PATH = config.LOG_DIR / "rpa.lock"
+# Mesmo limite do ExecutionTimeLimit configurado no Task Scheduler (2h) -
+# se a trava for mais velha que isso, a execução que a criou já teria
+# sido encerrada pelo próprio agendador, então é seguro considerá-la
+# abandonada (processo anterior crashou sem limpar) em vez de bloquear
+# a execução atual para sempre.
+LOCK_MAX_IDADE_SEGUNDOS = 2 * 60 * 60
+
+
+class ExecucaoConcorrenteError(RuntimeError):
+    """Já existe uma execução em andamento (ver `_trava_execucao_unica`)."""
+
+
+@contextmanager
+def _trava_execucao_unica():
+    """
+    Garante que só uma execução do RPA rode por vez, usando um arquivo de
+    trava simples em `logs/rpa.lock` (sem dependência nova). Necessário
+    porque a tarefa diária no Task Scheduler foi configurada com "Start
+    When Available" (dispara assim que a máquina volta a ficar
+    disponível, mesmo que o horário programado já tenha passado) - se uma
+    execução anterior ainda estiver rodando (ex: travada numa página do
+    Looker) quando a próxima disparar, duas instâncias escrevendo ao
+    mesmo tempo nos mesmos arquivos do OneDrive poderiam corromper dados
+    de um jeito muito mais difícil de perceber/corrigir do que uma
+    execução simplesmente recusada.
+    """
+    if LOCK_PATH.exists():
+        idade_segundos = time.time() - LOCK_PATH.stat().st_mtime
+        if idade_segundos < LOCK_MAX_IDADE_SEGUNDOS:
+            raise ExecucaoConcorrenteError(
+                f"Já existe uma execução em andamento (trava criada há "
+                f"{int(idade_segundos)}s em '{LOCK_PATH}') - abortando para não "
+                "rodar duas instâncias ao mesmo tempo sobre os mesmos arquivos. "
+                "Se tiver certeza de que não há nenhuma execução ativa agora, "
+                f"apague o arquivo '{LOCK_PATH}' manualmente e rode de novo."
+            )
+        logger.warning(
+            "Trava de execução encontrada, mas já tem %ds (> %ds do limite) - "
+            "a execução anterior provavelmente travou/crashou sem limpar a "
+            "trava. Prosseguindo mesmo assim.",
+            int(idade_segundos), LOCK_MAX_IDADE_SEGUNDOS,
+        )
+
+    LOCK_PATH.write_text(str(os.getpid()), encoding="utf-8")
+    try:
+        yield
+    finally:
+        try:
+            LOCK_PATH.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def _usa_sharepoint(base: dict) -> bool:
@@ -91,6 +147,12 @@ def main():
     parser.add_argument("--debug", action="store_true", help="abre o navegador visível em vez de headless")
     args = parser.parse_args()
 
+    try:
+        config.validar_ambiente()
+    except RuntimeError:
+        logger.exception("Configuração inválida - abortando antes de abrir qualquer navegador.")
+        raise
+
     if args.base:
         bases_to_run = [config.get_base_by_id(args.base)]
     elif args.all:
@@ -98,7 +160,12 @@ def main():
     else:
         bases_to_run = [b for b in config.BASES if b["frequencia"] == args.frequencia]
 
-    run_bases(bases_to_run, headless=not args.debug)
+    try:
+        with _trava_execucao_unica():
+            run_bases(bases_to_run, headless=not args.debug)
+    except ExecucaoConcorrenteError:
+        logger.error("Execução abortada: já existe outra em andamento (ver mensagem acima).")
+        raise
 
 
 if __name__ == "__main__":
