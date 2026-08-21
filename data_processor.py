@@ -321,6 +321,7 @@ def _apply_excel_autofilter(path: Path):
 
 
 CHAVE_UNICA_NUMERO_CONTRATOS = "ID Proposta"
+DIAS_JANELA_TRIMESTRE_NUMERO_CONTRATOS = 90  # janela móvel da planilha "Trimestre" - ver _process_numero_contratos
 
 
 def _process_numero_contratos(downloaded_path: Path, base: dict) -> Path:
@@ -338,19 +339,25 @@ def _process_numero_contratos(downloaded_path: Path, base: dict) -> Path:
          a deduplicação é por "ID Proposta", mantendo sempre a versão mais
          recente baixada. Contrato novo = 🟩 verde, contrato existente com
          dado alterado = 🟨 amarelo.
-      4. Mescla essa mesma Prévia na planilha de origem oficial do ano
-         correspondente - contrato novo é acrescentado depois da última
-         linha já preenchida (🟩 verde) e contrato existente é atualizado
-         onde já estava se algum dado mudou (🟨 amarelo); nunca remove uma
-         linha.
+      4. Mescla essa mesma Prévia na planilha "Trimestre" (Digitação
+         Analítico - {ano} - Trimestre.xlsx, mesmo ano) - contrato novo é
+         acrescentado depois da última linha já preenchida (🟩 verde) e
+         contrato existente é atualizado onde já estava se algum dado
+         mudou (🟨 amarelo). Diferente das outras planilhas de origem
+         oficial do projeto, esta NÃO acumula para sempre: a cada
+         execução, qualquer contrato com data mais antiga que
+         `DIAS_JANELA_TRIMESTRE_NUMERO_CONTRATOS` (90 dias) é removido -
+         é uma janela móvel de ~1 trimestre, não um histórico permanente
+         (pedido do time em 21/08/2026 - antes acumulava o ano inteiro).
       5. Mescla também a Prévia numa segunda planilha, "Digitação
          Analítico - {ano}_Anual" (mesma pasta da planilha do passo 4),
          usando `_acumular_e_colorir_origem` - mesma regra de cor do
-         passo 4, mas SEM reordenar por data: contrato novo é sempre
-         acrescentado logo depois da última linha já preenchida, na ordem
-         em que foi sendo processado ao longo do ano, funcionando como um
-         acumulado histórico único (a planilha do passo 4 é reordenada por
-         data a cada execução; esta não).
+         passo 4, mas SEM a janela de 90 dias e SEM reordenar por data:
+         contrato novo é sempre acrescentado logo depois da última linha
+         já preenchida, na ordem em que foi sendo processado ao longo do
+         ano, funcionando como o único acumulado histórico permanente
+         (nunca remove uma linha) - é esta planilha, não a do passo 4, que
+         guarda o ano completo.
 
     Na planilha do passo 4, o resultado final fica ordenado por data
     crescente (do menor para o maior dia de cada mês, mês a mês) - não só
@@ -368,6 +375,13 @@ def _process_numero_contratos(downloaded_path: Path, base: dict) -> Path:
         if date_col in df.columns and not df.empty:
             return df[_current_month_mask_com_virada(df, date_col)]
         return df
+
+    def _apenas_janela_trimestre(df: pd.DataFrame) -> pd.DataFrame:
+        if date_col not in df.columns or df.empty:
+            return df
+        dt = pd.to_datetime(df[date_col], errors="coerce", dayfirst=True)
+        limite_inferior = pd.Timestamp(date.today() - timedelta(days=DIAS_JANELA_TRIMESTRE_NUMERO_CONTRATOS))
+        return df[dt >= limite_inferior]
 
     df_tratado = pd.read_excel(downloaded_path)
     linhas_baixadas = len(df_tratado)
@@ -392,13 +406,14 @@ def _process_numero_contratos(downloaded_path: Path, base: dict) -> Path:
     _marcar_linhas_novas_e_editadas(previa_path, df_previa, chave, df_previa_existente)
     logger.info("Prévia atualizada (sem duplicar '%s'): %s (%d linhas)", chave, previa_path, len(df_previa))
 
-    # --- 2. Mescla na planilha de origem oficial do ano correspondente ---
+    # --- 2. Mescla na planilha "Trimestre" (janela móvel de 90 dias) ---
     ano = date.today().year
     origem_path = config.caminho_planilha_origem_numero_contratos(ano)
     origem_path.parent.mkdir(parents=True, exist_ok=True)
     autofiltro = bool(base["regras"].get("aplicar_autofiltro_excel"))
 
     df_final, df_origem_anterior = _acumular_planilha(origem_path, df_previa, chave)
+    df_final = _apenas_janela_trimestre(df_final)  # descarta contratos com mais de 90 dias
     df_final = _ordenar_por_data(df_final)
     _com_retry_arquivo_bloqueado(origem_path, lambda: df_final.to_excel(origem_path, index=False))
     if autofiltro:
@@ -407,8 +422,8 @@ def _process_numero_contratos(downloaded_path: Path, base: dict) -> Path:
     linhas_novas = _contar_chaves_novas(df_final, df_origem_anterior, chave)
 
     logger.info(
-        "Planilha de origem atualizada: %s (+%d contratos novos, %d no total)",
-        origem_path, linhas_novas, len(df_final),
+        "Planilha 'Trimestre' atualizada: %s (+%d contratos novos, %d no total, janela de %d dias)",
+        origem_path, linhas_novas, len(df_final), DIAS_JANELA_TRIMESTRE_NUMERO_CONTRATOS,
     )
 
     # --- 3. Mescla na planilha "_Anual" (mesmo ano, sem reordenar por data) ---

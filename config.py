@@ -79,18 +79,23 @@ def caminho_previa_numero_contratos() -> Path:
 
 
 def caminho_planilha_origem_numero_contratos(ano: int) -> Path:
-    """Caminho da planilha de origem oficial 'Número de Contratos' de um ano específico."""
+    """Caminho da planilha 'Digitação Analítico - {ano} - Trimestre', que
+    mantém uma JANELA MÓVEL dos últimos 90 dias (não acumula para sempre -
+    uma linha sai da planilha quando fica velha demais) - ver
+    `data_processor._process_numero_contratos`. Pedido do time em
+    21/08/2026 (antes acumulava o ano inteiro; isso ficou por conta
+    exclusiva da planilha "_Anual" logo abaixo)."""
     return (
         Path(PLANILHA_ORIGEM_NUMERO_CONTRATOS_DIR)
         / f"Numero de Contratos - {ano}"
-        / f"Digitação Analítico - {ano}.xlsx"
+        / f"Digitação Analítico - {ano} - Trimestre.xlsx"
     )
 
 
 def caminho_planilha_origem_numero_contratos_anual(ano: int) -> Path:
     """Caminho da planilha 'Digitação Analítico - {ano}_Anual', que acumula todo
-    o histórico do ano na mesma pasta da planilha mensal - ver
-    `data_processor._process_numero_contratos`."""
+    o histórico do ano (nunca remove uma linha) na mesma pasta da planilha
+    "Trimestre" acima - ver `data_processor._process_numero_contratos`."""
     return (
         Path(PLANILHA_ORIGEM_NUMERO_CONTRATOS_DIR)
         / f"Numero de Contratos - {ano}"
