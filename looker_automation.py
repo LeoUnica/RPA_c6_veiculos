@@ -88,7 +88,10 @@ ID_COMBOBOX_FORMATO_EXPORT = "listbox-input-qr-export-modal-format"  # modal de 
 ID_BOTAO_DOWNLOAD_EXPORT = "qr-export-modal-download"  # idem
 
 
-def _click_com_prioridade(tentativas: list[tuple[str, Callable[[], Locator]]], *, force: bool = False, timeout: int | None = None) -> str:
+def _click_com_prioridade(
+    tentativas: list[tuple[str, Callable[[], Locator]]], *,
+    force: bool = False, timeout: int | None = None, no_wait_after: bool = False,
+) -> str:
     """
     Clica seguindo uma HIERARQUIA de seletores, do mais estável para o
     menos estável, em vez de depender só de texto visível (que pode ser
@@ -107,6 +110,17 @@ def _click_com_prioridade(tentativas: list[tuple[str, Callable[[], Locator]]], *
     (30s) - igual ao comportamento original de todo `.click()` deste
     módulo, que nunca passava timeout explícito. Só informe um valor
     aqui se o clique original já tinha um timeout customizado.
+
+    `no_wait_after=True` pula a espera padrão do Playwright por uma
+    "navegação agendada" depois do clique - útil para botões que disparam
+    um download em vez de navegar (o clique em si funciona, mas o
+    Playwright fica parado em "waiting for scheduled navigations to
+    finish" até estourar o timeout, mesmo com o download já capturado por
+    `expect_download` - confirmado ao vivo em 24/08/2026 com o botão
+    "Download" do modal de export, que passou a travar de forma
+    consistente depois que o volume de dados exportado aumentou (filtro
+    "Year To Date" em vez de "Last 90 Days"), tornando a demora do Looker
+    pra gerar o arquivo maior que a espera de navegação).
     """
     ultimo_erro = None
     for i, (descricao, factory) in enumerate(tentativas):
@@ -115,6 +129,8 @@ def _click_com_prioridade(tentativas: list[tuple[str, Callable[[], Locator]]], *
             if locator.count() == 0:
                 continue
             kwargs = {"timeout": timeout} if timeout is not None else {}
+            if no_wait_after:
+                kwargs["no_wait_after"] = True
             locator.first.click(force=force, **kwargs)
             if i > 0:
                 logger.warning(
@@ -402,8 +418,8 @@ def _logar_diagnostico_aba_analitico_nao_encontrada(final_page: Page):
 
 def _alterar_periodo_dt_relatorio(final_page: Page, valor_alvo: str):
     """
-    Troca o filtro "Dt Relatorio Date" para um preset relativo (ex:
-    "Last 90 Days").
+    Troca o filtro "Dt Relatorio Date" para o preset informado (ex:
+    "Last 90 Days", "Year To Date").
 
     Confirmado por screenshot real enviado pelo usuário em 24/08/2026: o
     filtro NÃO é um operador "is in the last N days" com campo numérico
@@ -411,15 +427,11 @@ def _alterar_periodo_dt_relatorio(final_page: Page, valor_alvo: str):
     esperando um `input[type="number"]` que nunca existiu) - é um dropdown
     com abas "Presets"/"Custom" e uma lista fixa de opções clicáveis
     (Today, Yesterday, Last 7 Days, Last 14 Days, Last 30 Days, Last 90
-    Days, Year To Date, More...). Clicar no chip do valor atual abre esse
-    dropdown; basta clicar no preset alvo na lista.
+    Days, Year To Date, More...). Clicar no chip do valor atual (o padrão
+    salvo no dashboard é "Last 30 Days", visível no screenshot) abre esse
+    dropdown; basta clicar no preset alvo na lista - qualquer texto exato
+    da lista de presets serve, não só o padrão "Last N Days".
     """
-    if not re.match(r"Last \d+ Days?$", valor_alvo, re.IGNORECASE):
-        raise ValueError(
-            f"Formato inesperado para periodo_dt_relatorio: "
-            f"'{valor_alvo}' (esperado 'Last N Days')"
-        )
-
     logger.info("Alterando 'Dt Relatorio Date' para '%s'...", valor_alvo)
 
     # Localiza o chip atual do filtro (mostra o preset em vigor, ex: "Last 30 Days").
@@ -565,7 +577,7 @@ def _complete_download_dialog(final_page: Page, base_id: str, download_timeout_m
         _click_com_prioridade([
             (f"id #{ID_BOTAO_DOWNLOAD_EXPORT}", lambda: final_page.locator(f"#{ID_BOTAO_DOWNLOAD_EXPORT}")),
             ("role button 'Download'", lambda: final_page.get_by_role("button", name="Download", exact=True)),
-        ])
+        ], no_wait_after=True)
 
     download = download_info.value
     dest_path = config.DOWNLOAD_DIR / f"{base_id}_{int(time.time())}.xlsx"
@@ -593,7 +605,12 @@ def download_analitico_spreadsheet(final_page: Page, base_id: str) -> Path:
     tile_button.click(force=True)
     final_page.wait_for_timeout(1000)
 
-    return _complete_download_dialog(final_page, base_id)
+    # timeout maior que o padrão (60s) - desde que o filtro "Dt Relatorio
+    # Date" passou a ser "Year To Date" (24/08/2026), o Looker exporta o
+    # ano inteiro em vez de só 90 dias, e demora mais para gerar o arquivo
+    # antes do download começar (mesmo motivo do timeout maior usado por
+    # Carteira e Parceiros, que também baixa o ano inteiro).
+    return _complete_download_dialog(final_page, base_id, download_timeout_ms=240000)
 
 
 def download_numero_contratos_report(context: BrowserContext, page: Page, base: dict) -> Path:

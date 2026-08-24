@@ -338,38 +338,40 @@ def _process_numero_contratos(downloaded_path: Path, base: dict) -> Path:
     """
     Fluxo específico da base "Número de Contratos":
       1. Filtra Status Proposta = PROPOSTA PAGA e seleciona as colunas certas.
-      2. Descarta qualquer linha que não seja do mês atual - o relatório usa
-         "Last 30 Days", então sempre traz um pedaço do mês anterior junto,
-         que não deve entrar na Prévia nem ser considerado daqui pra frente.
-         Exceção: no primeiro dia do mês (virada), também mantém os últimos
-         3 dias do mês anterior, para não perder contratos de fim de mês
-         que só aparecem como "PROPOSTA PAGA" com um pequeno atraso.
-      3. Acumula o resultado na planilha "Prévia" (só o mês atual), sem
-         duplicar contratos já vistos em downloads anteriores do mesmo mês -
-         a deduplicação é por "ID Proposta", mantendo sempre a versão mais
-         recente baixada. Contrato novo = 🟩 verde, contrato existente com
-         dado alterado = 🟨 amarelo.
-      4. Mescla essa mesma Prévia na planilha "Trimestre" (Digitação
-         Analítico - {ano} - Trimestre.xlsx, mesmo ano) - contrato novo é
-         acrescentado depois da última linha já preenchida (🟩 verde) e
-         contrato existente é atualizado onde já estava se algum dado
-         mudou (🟨 amarelo). Diferente das outras planilhas de origem
-         oficial do projeto, esta NÃO acumula para sempre: a cada
-         execução, qualquer contrato com data mais antiga que
-         `DIAS_JANELA_TRIMESTRE_NUMERO_CONTRATOS` (90 dias) é removido -
-         é uma janela móvel de ~1 trimestre, não um histórico permanente
-         (pedido do time em 21/08/2026 - antes acumulava o ano inteiro).
-      5. Mescla também a Prévia numa segunda planilha, "Digitação
-         Analítico - {ano}_Anual" (mesma pasta da planilha do passo 4),
+      2. Acumula o download inteiro (últimos 90 dias, filtro do próprio
+         relatório) na planilha "Trimestre" (Digitação Analítico - {ano} -
+         Trimestre.xlsx, mesmo ano) - contrato novo é acrescentado depois
+         da última linha já preenchida (🟩 verde) e contrato existente é
+         atualizado onde já estava se algum dado mudou (🟨 amarelo).
+         Diferente das outras planilhas de origem oficial do projeto, esta
+         NÃO acumula para sempre: a cada execução, qualquer contrato com
+         data mais antiga que `DIAS_JANELA_TRIMESTRE_NUMERO_CONTRATOS` (90
+         dias) é removido - é uma janela móvel de ~1 trimestre, não um
+         histórico permanente (pedido do time em 21/08/2026). CORRIGIDO em
+         24/08/2026: antes o download inteiro era recortado só para o mês
+         atual (`_apenas_mes_atual`) ANTES de entrar aqui, então a janela
+         de 90 dias nunca via de fato os outros meses que o relatório traz
+         - agora essa planilha recebe o download completo (90 dias), sem
+         recorte de mês.
+      3. Mescla também o download inteiro numa segunda planilha, "Digitação
+         Analítico - {ano}_Anual" (mesma pasta da planilha do passo 2),
          usando `_acumular_e_colorir_origem` - mesma regra de cor do
-         passo 4, mas SEM a janela de 90 dias e SEM reordenar por data:
+         passo 2, mas SEM a janela de 90 dias e SEM reordenar por data:
          contrato novo é sempre acrescentado logo depois da última linha
          já preenchida, na ordem em que foi sendo processado ao longo do
          ano, funcionando como o único acumulado histórico permanente
-         (nunca remove uma linha) - é esta planilha, não a do passo 4, que
+         (nunca remove uma linha) - é esta planilha, não a do passo 2, que
          guarda o ano completo.
+      4. Só a planilha "Prévia" continua restrita ao mês/ano de referência
+         (mês civil atual) - descarta qualquer linha que não seja do mês
+         atual, já que o pedido original para ela era refletir só o mês
+         corrente, não a janela de 90 dias do relatório. Exceção: no
+         primeiro dia do mês (virada), também mantém os últimos 3 dias do
+         mês anterior, para não perder contratos de fim de mês que só
+         aparecem como "PROPOSTA PAGA" com um pequeno atraso. Deduplicação
+         por "ID Proposta", mantendo sempre a versão mais recente baixada.
 
-    Na planilha do passo 4, o resultado final fica ordenado por data
+    Na planilha do passo 2, o resultado final fica ordenado por data
     crescente (do menor para o maior dia de cada mês, mês a mês) - não só
     o bloco novo, a tabela inteira é reordenada por data a cada execução.
     """
@@ -396,33 +398,15 @@ def _process_numero_contratos(downloaded_path: Path, base: dict) -> Path:
     df_tratado = pd.read_excel(downloaded_path)
     linhas_baixadas = len(df_tratado)
     df_tratado = _apply_row_filters(df_tratado, base)
-    df_tratado = _select_columns(df_tratado, base)
-    df_tratado = _apenas_mes_atual(df_tratado)
+    df_tratado = _select_columns(df_tratado, base)  # NÃO recorta por mês - mantém os 90 dias inteiros do download
 
-    # --- 1. Acumula na "Prévia" (só o mês atual), sem duplicar por ID Proposta ---
-    previa_path = config.caminho_previa_numero_contratos()
-    previa_path.parent.mkdir(parents=True, exist_ok=True)
-
-    df_previa_existente = _com_retry_arquivo_bloqueado(previa_path, lambda: pd.read_excel(previa_path)) if previa_path.exists() else pd.DataFrame(columns=df_tratado.columns)
-    df_previa_existente = _apenas_mes_atual(df_previa_existente)  # descarta sobra de mês anterior já acumulada
-
-    df_previa = pd.concat([df_previa_existente, df_tratado], ignore_index=True)
-    df_previa = df_previa.drop_duplicates(subset=chave, keep="last")
-    df_previa = _ordenar_por_data(df_previa)
-
-    _com_retry_arquivo_bloqueado(previa_path, lambda: df_previa.to_excel(previa_path, index=False, sheet_name="sheet1"))
-    if base["regras"].get("aplicar_autofiltro_excel"):
-        _apply_excel_autofilter(previa_path)
-    _marcar_linhas_novas_e_editadas(previa_path, df_previa, chave, df_previa_existente)
-    logger.info("Prévia atualizada (sem duplicar '%s'): %s (%d linhas)", chave, previa_path, len(df_previa))
-
-    # --- 2. Mescla na planilha "Trimestre" (janela móvel de 90 dias) ---
+    # --- 1. Mescla o download inteiro (90 dias) na planilha "Trimestre" (janela móvel) ---
     ano = date.today().year
     origem_path = config.caminho_planilha_origem_numero_contratos(ano)
     origem_path.parent.mkdir(parents=True, exist_ok=True)
     autofiltro = bool(base["regras"].get("aplicar_autofiltro_excel"))
 
-    df_final, df_origem_anterior = _acumular_planilha(origem_path, df_previa, chave)
+    df_final, df_origem_anterior = _acumular_planilha(origem_path, df_tratado, chave)
     df_final = _apenas_janela_trimestre(df_final)  # descarta contratos com mais de 90 dias
     df_final = _ordenar_por_data(df_final)
     _com_retry_arquivo_bloqueado(origem_path, lambda: df_final.to_excel(origem_path, index=False, sheet_name="sheet1"))
@@ -436,15 +420,34 @@ def _process_numero_contratos(downloaded_path: Path, base: dict) -> Path:
         origem_path, linhas_novas, len(df_final), DIAS_JANELA_TRIMESTRE_NUMERO_CONTRATOS,
     )
 
-    # --- 3. Mescla na planilha "_Anual" (mesmo ano, sem reordenar por data) ---
+    # --- 2. Mescla o download inteiro na planilha "_Anual" (mesmo ano, sem reordenar por data) ---
     origem_anual_path = config.caminho_planilha_origem_numero_contratos_anual(ano)
     df_final_anual, linhas_novas_anual = _acumular_e_colorir_origem(
-        origem_anual_path, df_previa, chave, autofiltro,
+        origem_anual_path, df_tratado, chave, autofiltro,
     )
     logger.info(
         "Planilha '_Anual' atualizada: %s (+%d contratos novos, %d no total)",
         origem_anual_path, linhas_novas_anual, len(df_final_anual),
     )
+
+    # --- 3. Acumula na "Prévia" (só o mês/ano de referência), sem duplicar por ID Proposta ---
+    df_tratado_mes_atual = _apenas_mes_atual(df_tratado)
+
+    previa_path = config.caminho_previa_numero_contratos()
+    previa_path.parent.mkdir(parents=True, exist_ok=True)
+
+    df_previa_existente = _com_retry_arquivo_bloqueado(previa_path, lambda: pd.read_excel(previa_path)) if previa_path.exists() else pd.DataFrame(columns=df_tratado.columns)
+    df_previa_existente = _apenas_mes_atual(df_previa_existente)  # descarta sobra de mês anterior já acumulada
+
+    df_previa = pd.concat([df_previa_existente, df_tratado_mes_atual], ignore_index=True)
+    df_previa = df_previa.drop_duplicates(subset=chave, keep="last")
+    df_previa = _ordenar_por_data(df_previa)
+
+    _com_retry_arquivo_bloqueado(previa_path, lambda: df_previa.to_excel(previa_path, index=False, sheet_name="sheet1"))
+    if base["regras"].get("aplicar_autofiltro_excel"):
+        _apply_excel_autofilter(previa_path)
+    _marcar_linhas_novas_e_editadas(previa_path, df_previa, chave, df_previa_existente)
+    logger.info("Prévia atualizada (sem duplicar '%s'): %s (%d linhas)", chave, previa_path, len(df_previa))
 
     observacao = "Sem dados no período" if linhas_baixadas == 0 else ""
     registrar_historico(base["nome"], linhas_baixadas, linhas_novas, len(df_final), observacao)

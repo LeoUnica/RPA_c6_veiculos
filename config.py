@@ -313,12 +313,17 @@ BASES = [
         # Filtros aplicados no painel lateral direito, específicos dessa base
         "filtros": {
             "tipo_exibicao": "Valor",              # manter somente "Valor" em Tipo Exibição
-            # Dt Relatorio Date -> Last 90 Days (janela móvel de 90 dias
-            # corridos, independente do mês/dia de execução - pedido do
-            # time em 24/08/2026, substituindo o "Last 30 Days" anterior;
-            # ver looker_automation._alterar_periodo_dt_relatorio, que
-            # agora TROCA esse valor ativamente em vez de só conferir).
-            "periodo_dt_relatorio": "Last 90 Days",
+            # Dt Relatorio Date -> Year To Date (baixa o ano inteiro, de
+            # 1º de janeiro até hoje, num preset só - pedido do time em
+            # 24/08/2026: a planilha "Trimestre" continua recortada para
+            # os últimos 90 dias DEPOIS do merge (ver
+            # data_processor.DIAS_JANELA_TRIMESTRE_NUMERO_CONTRATOS), mas
+            # a "_Anual" agora recebe o ano inteiro de verdade a cada
+            # execução, em vez de depender de dias antigos acumulados
+            # pouco a pouco (o que nunca preenchia meses anteriores ao
+            # início da automação). Ver
+            # looker_automation._alterar_periodo_dt_relatorio.
+            "periodo_dt_relatorio": "Year To Date",
         },
         "pasta_sharepoint": "Número de Contratos",
         "frequencia": "diaria",
