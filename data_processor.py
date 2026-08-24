@@ -6,6 +6,9 @@ meta_financiamento_seguro, carteira_parceiros, comissao_a_vista) tem seu
 próprio fluxo de tratamento dedicado (`_process_*`), pois cada uma tem
 regras próprias de seleção de colunas, identificação do "período atual" e
 destino final - ver `process_base` para o dispatch entre elas.
+"meta_financiamento_seguro" tem dois `_process_*` (mês atual e mês
+anterior, ver `_process_meta_financiamento_seguro_mes_anterior`) porque é
+baixada duas vezes por execução, mas continua sendo 1 base só, não uma 6ª.
 """
 
 import logging
@@ -582,6 +585,43 @@ def _process_meta_financiamento_seguro(downloaded_path: Path, base: dict) -> Pat
     return origem_paths[-1]
 
 
+def _process_meta_financiamento_seguro_mes_anterior(downloaded_path: Path, base: dict) -> Path:
+    """
+    Fluxo da base "meta_financiamento_seguro_mes_anterior": mesmo
+    relatório/colunas de "Meta Financiamento e Seguro"
+    (`_process_meta_financiamento_seguro`), baixado com "Safra Mês" fixo
+    no mês civil anterior (ver
+    `looker_automation._selecionar_intervalo_mes_anterior`).
+
+    Diferente da base do mês atual, aqui não há Prévia nem roteamento por
+    ano - acumula direto num único arquivo fixo
+    ("Meta Financiamento e Seguro - Mês Anterior.xlsx", mesma pasta da
+    planilha de origem oficial) usando o mesmo acúmulo "nunca descarta uma
+    linha" + marcação de cor de `_acumular_e_colorir_origem`: o nome do
+    arquivo já deixa claro que é sempre "o mês anterior" em relação à
+    execução, então não faz sentido separar por ano - cada execução
+    mensal só acrescenta/atualiza as linhas daquele mês.
+    """
+    chave = CHAVE_UNICA_META_FINANCIAMENTO_SEGURO
+
+    df_tratado = pd.read_excel(downloaded_path)
+    linhas_baixadas = len(df_tratado)
+    df_tratado = _select_columns(df_tratado, base)
+
+    origem_path = config.caminho_planilha_origem_meta_financiamento_seguro_mes_anterior()
+    origem_path.parent.mkdir(parents=True, exist_ok=True)
+    autofiltro = bool(base["regras"].get("aplicar_autofiltro_excel"))
+    df_final, linhas_novas = _acumular_e_colorir_origem(origem_path, df_tratado, chave, autofiltro)
+
+    logger.info(
+        "Planilha de origem atualizada: %s (+%d linhas novas, %d no total)",
+        origem_path, linhas_novas, len(df_final),
+    )
+    observacao = "Sem dados no período" if linhas_baixadas == 0 else ""
+    registrar_historico(base["nome"], linhas_baixadas, linhas_novas, len(df_final), observacao)
+    return origem_path
+
+
 CHAVE_UNICA_CARTEIRA_PARCEIROS = ["Cnpj Da Loja", "Filial", "Anomes"]
 
 
@@ -1091,6 +1131,9 @@ def process_base(downloaded_path: Path, base: dict) -> Path:
 
     if modo == "planilha_origem_local_meta_financiamento_seguro":
         return _process_meta_financiamento_seguro(downloaded_path, base)
+
+    if modo == "planilha_origem_local_meta_financiamento_seguro_mes_anterior":
+        return _process_meta_financiamento_seguro_mes_anterior(downloaded_path, base)
 
     if modo == "planilha_origem_local_carteira_parceiros":
         return _process_carteira_parceiros(downloaded_path, base)

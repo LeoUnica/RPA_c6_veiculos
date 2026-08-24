@@ -146,6 +146,23 @@ def caminho_planilha_origem_meta_financiamento_seguro(ano: int) -> Path:
     """Caminho da planilha de origem oficial de Meta Financiamento e Seguro de um ano específico."""
     return Path(PLANILHA_ORIGEM_META_FINANCIAMENTO_SEGURO_DIR) / f"Meta Financiamento Seguro - {ano}.xlsx"
 
+
+def caminho_planilha_origem_meta_financiamento_seguro_mes_anterior() -> Path:
+    """
+    Caminho da planilha 'Meta Financiamento e Seguro - Mês Anterior.xlsx',
+    na MESMA pasta das planilhas de origem oficial por ano acima - mantém
+    só os dados do mês civil anterior à execução (baixados com o filtro
+    "Safra Mês" fixo nesse período, ver
+    `looker_automation._selecionar_intervalo_mes_anterior`), sempre no
+    mesmo arquivo (sem separação por ano, diferente da planilha do mês
+    atual - o nome já deixa claro que é sempre "o mês anterior" em relação
+    à execução, então não faz sentido rotear por ano). Pedido do time em
+    24/08/2026: manter a planilha do mês atual como já era e, além dela,
+    criar/usar esta segunda planilha só para o mês anterior (ver base
+    "meta_financiamento_seguro_mes_anterior" em BASES).
+    """
+    return Path(PLANILHA_ORIGEM_META_FINANCIAMENTO_SEGURO_DIR) / "Meta Financiamento e Seguro - Mês Anterior.xlsx"
+
 # Pasta "Prévia" e pasta raiz da planilha de origem oficial de "Carteira e
 # Parceiros" - também um arquivo por ano na mesma pasta (sem subpasta),
 # ex: "CARTEIRA- 2026.xlsx".
@@ -200,7 +217,12 @@ def caminho_planilha_origem_comissao_a_vista() -> Path:
     return Path(PLANILHA_ORIGEM_COMISSAO_A_VISTA_DIR) / "Comissão A Vista - Analitico.xlsx"
 
 # --------------------------------------------------------------------------
-# Definição das 5 bases (extraído do material da equipe)
+# Definição das 5 bases (extraído do material da equipe). A lista abaixo
+# tem 6 entradas porque "meta_financiamento_seguro" é baixada duas vezes
+# por execução - mês atual ("meta_financiamento_seguro") e mês anterior
+# ("meta_financiamento_seguro_mes_anterior", mesmo relatório/pasta no
+# OneDrive, só planilha diferente) - as duas entradas contam como 1 base
+# só, não como uma 6ª base.
 # --------------------------------------------------------------------------
 BASES = [
     {
@@ -236,6 +258,46 @@ BASES = [
         },
     },
     {
+        # Mesmo relatório/dashboard de "meta_financiamento_seguro" acima
+        # (mesmo "looker_path"/"link_relatorio"/"secao_tabela"/
+        # "colunas_manter"), só que baixado com o filtro "Safra Mês" fixo
+        # no mês civil ANTERIOR ao invés do mês corrente - ver
+        # "periodo_safra_mes" abaixo e
+        # looker_automation._selecionar_intervalo_mes_anterior. Pedido do
+        # time em 24/08/2026: manter a planilha do mês atual como já era
+        # e, além dela, criar/usar esta segunda base só para o mês
+        # anterior, na mesma pasta da planilha oficial (ver
+        # config.caminho_planilha_origem_meta_financiamento_seguro_mes_anterior).
+        "id": "meta_financiamento_seguro_mes_anterior",
+        "nome": "Meta Financiamento e Seguro - Mês Anterior",
+        "looker_path": ["Relatórios", "Relatórios Gerenciais", "Auto"],
+        "link_relatorio": "Resumo Apuração Parceiro 2.0",
+        "secao_tabela": "Bloco de Metas - Por Filial",
+        # Sinaliza para looker_automation.apply_safra_mes_filter usar o
+        # ramo "mês anterior" (intervalo fixo) em vez do padrão "mês
+        # atual" - ver looker_automation.download_meta_financiamento_seguro_report.
+        "periodo_safra_mes": "mes_anterior",
+        "pasta_sharepoint": None,  # não usa SharePoint - ver "modo" abaixo
+        "frequencia": "mensal",
+        "regras": {
+            # Não usa Prévia nem roteamento por ano (diferente da base do
+            # mês atual): acumula direto num único arquivo fixo - ver
+            # data_processor._process_meta_financiamento_seguro_mes_anterior.
+            "modo": "planilha_origem_local_meta_financiamento_seguro_mes_anterior",
+            "colunas_manter": [
+                "Anomes Apuracao",
+                "Filial",
+                "R$ Meta",
+                "R$ Produção",
+                "R$ Meta Seguros",
+                "R$ Seguros",
+            ],
+            "remover_colunas": [],
+            "filtro_status_proposta": None,
+            "aplicar_autofiltro_excel": True,
+        },
+    },
+    {
         "id": "numero_contratos",
         "nome": "Número de Contratos",
         # Caminho de menu até abrir o painel "Auto" (Relatórios > Relatórios
@@ -251,7 +313,12 @@ BASES = [
         # Filtros aplicados no painel lateral direito, específicos dessa base
         "filtros": {
             "tipo_exibicao": "Valor",              # manter somente "Valor" em Tipo Exibição
-            "periodo_dt_relatorio": "Last 30 Days",  # Dt Relatorio Date -> Last 30 Days
+            # Dt Relatorio Date -> Last 90 Days (janela móvel de 90 dias
+            # corridos, independente do mês/dia de execução - pedido do
+            # time em 24/08/2026, substituindo o "Last 30 Days" anterior;
+            # ver looker_automation._alterar_periodo_dt_relatorio, que
+            # agora TROCA esse valor ativamente em vez de só conferir).
+            "periodo_dt_relatorio": "Last 90 Days",
         },
         "pasta_sharepoint": "Número de Contratos",
         "frequencia": "diaria",

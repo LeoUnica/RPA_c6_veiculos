@@ -3,10 +3,22 @@ Automação do download dos relatórios no Looker via Playwright.
 
 As 5 bases (numero_contratos, dias_sem_producao, meta_financiamento_seguro,
 carteira_parceiros, comissao_a_vista) têm cada uma seu próprio fluxo
-dedicado de navegação e download. As 4 primeiras já foram validadas
-rodando de verdade contra o portal - "comissao_a_vista" ainda não (ver
-aviso na seção dela abaixo). O relatório é hospedado no Google Looker de
-verdade, embutido dentro do WebAutorizador via janelas pop-up sucessivas.
+dedicado de navegação e download. "meta_financiamento_seguro" é baixada
+duas vezes por execução - uma para o mês atual e outra para o mês anterior
+("meta_financiamento_seguro_mes_anterior" em config.BASES, reaproveitando
+o mesmo fluxo de navegação e só mudando o período do filtro "Safra Mês")
+- são 2 downloads/entradas em config.BASES, mas contam como 1 base só
+(mesmo relatório, mesma pasta de destino no OneDrive, só planilhas
+diferentes). As 4 bases originais
+já foram validadas rodando de verdade contra o portal - "comissao_a_vista"
+ainda não (ver aviso na seção dela abaixo). Dos dois ajustes de filtro
+adicionados em 24/08/2026: "is previous month" em "Safra Mês"
+(`_selecionar_intervalo_mes_anterior`) já foi confirmado por inspeção ao
+vivo do dropdown de operadores do Looker; a troca ativa de "Dt Relatorio
+Date" para "Last 90 Days" (`_alterar_periodo_dt_relatorio`) ainda precisa
+ser confirmada rodando de verdade (ver aviso na função). O relatório é
+hospedado no Google Looker de verdade, embutido dentro do WebAutorizador
+via janelas pop-up sucessivas.
 
 Rodar `python looker_automation.py --base <id> --debug` abre o navegador
 visível (headless=False) para acompanhar o fluxo no site real.
@@ -72,7 +84,6 @@ ICON_MORE_VERT_PATH = (
 # centralizados aqui para não ficar espalhado pelo módulo.
 # --------------------------------------------------------------------------
 ID_LINK_RELATORIOS_GERENCIAIS = "WFP2010_MPCNSRELGER"  # <a id="..."> no menu ASP.NET do portal, usado pelas 5 bases
-HREF_DASHBOARD_ANALITICO_NUMERO_CONTRATOS = "corp_consignado_embed::00087"  # aba "Analítico" (numero_contratos)
 ID_COMBOBOX_FORMATO_EXPORT = "listbox-input-qr-export-modal-format"  # modal de export do Looker (chrome, todas as bases)
 ID_BOTAO_DOWNLOAD_EXPORT = "qr-export-modal-download"  # idem
 
@@ -283,22 +294,48 @@ def open_acompanhamento_veiculos_analitico(context: BrowserContext, page: Page) 
     return _clicar_link_relatorio_e_abrir_popup(context, catalogo, "Acompanhamento Veículos", indice=1)
 
 
+HREF_DASHBOARD_ANALITICO_NUMERO_CONTRATOS = "corp_consignado_embed::00087"  # id fixo do dashboard "Analítico" (numero_contratos) - confirmado pelo usuário colando o HTML real do link em 24/08/2026: <a href="/embed/dashboards/corp_consignado_embed::00087?...">❗ Analítico</a>
+
+
 def apply_analitico_filters(final_page: Page, filtros: dict):
     """
     Clica na aba "Analítico" e configura, no painel de filtros:
       - "Tipo Exibição" -> mantém somente a opção informada (ex: "Valor")
-      - "Dt Relatorio Date" -> período relativo (ex: "Last 30 Days")
+      - "Dt Relatorio Date" -> período relativo (ex: "Last 90 Days")
 
-    A aba "Analítico" é um link cujo `href` contém o id fixo do dashboard
-    no Looker (`corp_consignado_embed::00087`, confirmado por inspeção ao
-    vivo) - muito mais estável que o texto do link (que inclui um emoji e
-    pode ser renomeado), usado como topo da hierarquia; o texto (via role,
-    comportamento original) fica como fallback.
+    O dashboard abre inicialmente na aba "Produção" - NÃO usamos essa aba,
+    só serve de ponto de partida até clicarmos em "Analítico".
+
+    A barra de abas ("Digitação | Analítico | Produção | Analítico Aprov no
+    dia | Funil por dia util | Seguros | Voltar p/ One Page") é a navegação
+    de página nativa do Looker Studio, renderizada como `<a href="/embed/
+    dashboards/{HREF_DASHBOARD_ANALITICO_NUMERO_CONTRATOS}?...">` - href
+    confirmado pelo usuário colando o HTML real do link em 24/08/2026, é o
+    seletor mais estável (não depende de texto/ícone). Cada aba também tem
+    um ícone antes do rótulo (ex: "❗ Analítico", "💲Produção"), então o texto
+    NÃO é exatamente "Analítico" - por isso o fallback por texto usa uma
+    regex que exige terminar em "Analítico" (aceita qualquer ícone/prefixo
+    na frente, mas ainda exclui "Analítico Aprov no dia", que não termina
+    em "Analítico").
     """
-    _click_com_prioridade([
-        ("href do dashboard Analítico", lambda: final_page.locator(f'a[href*="{HREF_DASHBOARD_ANALITICO_NUMERO_CONTRATOS}"]')),
-        ("role link 'Analítico'", lambda: final_page.get_by_role("link", name="Analítico", exact=False)),
-    ])
+    logger.info("Aguardando a aba 'Analítico' aparecer no dashboard...")
+    aba_analitico = final_page.locator(f'a[href*="{HREF_DASHBOARD_ANALITICO_NUMERO_CONTRATOS}"]')
+
+    try:
+        aba_analitico.first.wait_for(state="visible", timeout=15000)
+    except Exception:
+        logger.warning(
+            "Aba 'Analítico' não encontrada pelo href do dashboard - tentando pelo texto (fallback)."
+        )
+        aba_analitico = final_page.get_by_text(re.compile(r"Analítico$", re.IGNORECASE))
+        try:
+            aba_analitico.first.wait_for(state="visible", timeout=45000)
+        except Exception:
+            _logar_diagnostico_aba_analitico_nao_encontrada(final_page)
+            raise
+
+    aba_analitico.first.click()
+    logger.info("Aba 'Analítico' selecionada.")
     final_page.wait_for_timeout(5000)
 
     # Abre o painel de filtros (botão "NN filters", o número varia por
@@ -322,16 +359,94 @@ def apply_analitico_filters(final_page: Page, filtros: dict):
     final_page.wait_for_timeout(500)
 
     # --- Dt Relatorio Date ---
-    # Na prática já vem com o valor certo por padrão salvo no dashboard
-    # (confirmado via querystring "Dt+Relatorio+Date=30+day"). Só avisamos
-    # no log se algum dia vier diferente - o clique para trocar esse filtro
-    # específico ainda não foi mapeado/validado.
-    if final_page.get_by_text(filtros["periodo_dt_relatorio"], exact=True).count() == 0:
-        logger.warning(
-            "Filtro 'Dt Relatorio Date' não está em '%s' - ajuste manual pode "
-            "ser necessário (fluxo de troca ainda não mapeado).",
-            filtros["periodo_dt_relatorio"],
+    # Pedido do time em 24/08/2026: buscar sempre os últimos 90 dias
+    # corridos (janela móvel), independente do mês/dia de execução - antes
+    # bastava conferir o padrão salvo no dashboard ("Last 30 Days",
+    # confirmado via querystring "Dt+Relatorio+Date=30+day"); agora
+    # trocamos o valor ativamente a cada execução (ver
+    # `_alterar_periodo_dt_relatorio`).
+    _alterar_periodo_dt_relatorio(final_page, filtros["periodo_dt_relatorio"])
+    logger.info("Filtros da aba 'Analítico' configurados com sucesso.")
+
+
+def _logar_diagnostico_aba_analitico_nao_encontrada(final_page: Page):
+    """
+    Diagnóstico de apoio quando nem o href nem o texto encontram a aba
+    "Analítico" - loga URL/título atuais, todos os elementos cujo texto
+    contém "Analítico" (para conferir como o Looker renderizou o rótulo
+    daquela vez) e salva um screenshot em `downloads/` antes de propagar o
+    erro original para quem chamou.
+    """
+    logger.error("Aba 'Analítico' não foi encontrada (nem por href, nem por texto).")
+    logger.error("URL atual do dashboard: %s", final_page.url)
+    try:
+        logger.error("Título atual da página: %s", final_page.title())
+    except Exception:
+        pass
+
+    elementos_analitico = final_page.get_by_text(re.compile(r"Analítico", re.IGNORECASE))
+    logger.error("Quantidade de elementos contendo 'Analítico': %d", elementos_analitico.count())
+    for i in range(elementos_analitico.count()):
+        try:
+            logger.error("Analítico[%d] = %r", i, elementos_analitico.nth(i).inner_text())
+        except Exception:
+            pass
+
+    try:
+        screenshot_path = config.DOWNLOAD_DIR / "debug_analitico_falha.png"
+        final_page.screenshot(path=str(screenshot_path), full_page=False)
+        logger.error("Screenshot de diagnóstico salvo em: %s", screenshot_path)
+    except Exception as ex:
+        logger.warning("Não foi possível salvar screenshot de diagnóstico: %s", ex)
+
+
+def _alterar_periodo_dt_relatorio(final_page: Page, valor_alvo: str):
+    """
+    Troca o filtro "Dt Relatorio Date" para um preset relativo (ex:
+    "Last 90 Days").
+
+    Confirmado por screenshot real enviado pelo usuário em 24/08/2026: o
+    filtro NÃO é um operador "is in the last N days" com campo numérico
+    (suposição incorreta da implementação anterior, que travava 30s
+    esperando um `input[type="number"]` que nunca existiu) - é um dropdown
+    com abas "Presets"/"Custom" e uma lista fixa de opções clicáveis
+    (Today, Yesterday, Last 7 Days, Last 14 Days, Last 30 Days, Last 90
+    Days, Year To Date, More...). Clicar no chip do valor atual abre esse
+    dropdown; basta clicar no preset alvo na lista.
+    """
+    if not re.match(r"Last \d+ Days?$", valor_alvo, re.IGNORECASE):
+        raise ValueError(
+            f"Formato inesperado para periodo_dt_relatorio: "
+            f"'{valor_alvo}' (esperado 'Last N Days')"
         )
+
+    logger.info("Alterando 'Dt Relatorio Date' para '%s'...", valor_alvo)
+
+    # Localiza o chip atual do filtro (mostra o preset em vigor, ex: "Last 30 Days").
+    chip_periodo = final_page.get_by_text(re.compile(r"^Last \d+ Days?$", re.IGNORECASE))
+    chip_periodo.first.wait_for(state="visible", timeout=30000)
+    chip_periodo.first.click(force=True)
+    final_page.wait_for_timeout(800)
+
+    # Dropdown abre com a lista de presets - clica na opção alvo pelo texto exato.
+    opcao_preset = final_page.get_by_text(valor_alvo, exact=True)
+    opcao_preset.first.wait_for(state="visible", timeout=15000)
+    opcao_preset.first.click()
+    final_page.wait_for_timeout(500)
+
+    # Fecha o dropdown, caso ainda esteja aberto.
+    final_page.keyboard.press("Escape")
+    final_page.wait_for_timeout(500)
+
+    if final_page.get_by_text(valor_alvo, exact=True).count() == 0:
+        logger.warning(
+            "Após tentar trocar 'Dt Relatorio Date' para '%s', "
+            "o chip não confirmou esse valor. "
+            "Revalidar visualmente com --debug.",
+            valor_alvo,
+        )
+    else:
+        logger.info("'Dt Relatorio Date' configurado para '%s'.", valor_alvo)
 
 
 def update_report_data(final_page: Page):
@@ -609,23 +724,63 @@ def open_resumo_parceiro(context: BrowserContext, page: Page, base: dict) -> Pag
     return _clicar_link_relatorio_e_abrir_popup(context, catalogo, base["link_relatorio"])
 
 
-def apply_safra_mes_filter(final_page: Page):
+def _selecionar_intervalo_mes_anterior(final_page: Page):
+    """
+    Troca o filtro "Safra Mês" para "is previous month" - operador nativo
+    do Looker que sempre aponta pro mês civil anterior ao mês corrente
+    (independente do dia de hoje), usado só pela base
+    "meta_financiamento_seguro_mes_anterior" (ver `apply_safra_mes_filter`,
+    parâmetro `periodo`).
+
+    Confirmado por inspeção ao vivo do dropdown de operadores em
+    24/08/2026: ao abrir o combobox de operador (clicando no valor atual,
+    "is in the last") aparece a lista completa - "is in the last", "is on
+    the day", "is in range", "is before", "is on or after", "is in the
+    year", "is in the month", "is this", "is next", "is previous", "is",
+    "is null", "is not null", "is any time", "matches a user attribute",
+    "matches (advanced)" - com "is previous" disponível como opção nativa
+    (não precisa simular um intervalo de datas manualmente). Ao clicar em
+    "is previous" a unidade ao lado já vem preenchida em "month" por
+    padrão (mesmo comportamento do ramo "is this month" em
+    `apply_safra_mes_filter`), então não precisa trocar o combobox de
+    unidade - o chip final já mostra "is previous month" direto.
+    """
+    final_page.get_by_text("is in the last", exact=True).first.click(force=True)
+    final_page.wait_for_timeout(800)
+    final_page.get_by_text("is previous", exact=True).first.click(force=True)
+    final_page.wait_for_timeout(800)
+
+
+def apply_safra_mes_filter(final_page: Page, periodo: str = "mes_atual"):
     """
     Abre o painel de filtros e configura "Safra Mês" (sempre o primeiro
     filtro do painel - mesmo truque de regex "^is " usado em Número de
     Contratos). O valor padrão salvo no dashboard é "is in the last 6
     months", então SEMPRE precisamos trocar (diferente das outras bases,
-    onde o padrão já vinha certo):
-      - Caso normal: muda para "is this" + "month".
-      - Caso especial (`deve_usar_janela_curta_safra_mes()`): muda para
-        "is in the last" + "3" + "days", para não perder a apuração de fim
-        do mês anterior quando não houve dia útil antes do dia 01.
+    onde o padrão já vinha certo).
+
+    `periodo`:
+      - "mes_atual" (padrão): mês corrente.
+          - Caso normal: muda para "is this" + "month".
+          - Caso especial (`deve_usar_janela_curta_safra_mes()`): muda para
+            "is in the last" + "3" + "days", para não perder a apuração de
+            fim do mês anterior quando não houve dia útil antes do dia 01.
+      - "mes_anterior": mês civil anterior completo (1º ao último dia) -
+        usado pela base "meta_financiamento_seguro_mes_anterior" (ver
+        `_selecionar_intervalo_mes_anterior`). Pedido do time em
+        24/08/2026.
     """
     final_page.get_by_text("filters", exact=False).first.click()
     final_page.wait_for_timeout(1500)
 
     final_page.get_by_text(re.compile(r"^is "), exact=False).first.click()
     final_page.wait_for_timeout(800)
+
+    if periodo == "mes_anterior":
+        _selecionar_intervalo_mes_anterior(final_page)
+        final_page.keyboard.press("Escape")
+        final_page.wait_for_timeout(500)
+        return
 
     if deve_usar_janela_curta_safra_mes():
         # já abre em "is in the last" por padrão - só ajusta número e unidade
@@ -668,9 +823,14 @@ def download_bloco_metas_spreadsheet(final_page: Page, base_id: str, secao_tabel
 
 
 def download_meta_financiamento_seguro_report(context: BrowserContext, page: Page, base: dict) -> Path:
-    """Fluxo completo específico da base 'meta_financiamento_seguro'."""
+    """
+    Fluxo completo compartilhado pelas bases 'meta_financiamento_seguro' e
+    'meta_financiamento_seguro_mes_anterior' (mesmo dashboard/relatório -
+    só muda o período aplicado no filtro "Safra Mês", via
+    `base["periodo_safra_mes"]`, ver `apply_safra_mes_filter`).
+    """
     final_page = open_resumo_parceiro(context, page, base)
-    apply_safra_mes_filter(final_page)
+    apply_safra_mes_filter(final_page, periodo=base.get("periodo_safra_mes", "mes_atual"))
     update_report_data(final_page)
     path = download_bloco_metas_spreadsheet(final_page, base["id"], base["secao_tabela"])
     final_page.close()
@@ -838,7 +998,7 @@ def _download_single_base(context: BrowserContext, page: Page, base: dict) -> Pa
         return download_numero_contratos_report(context, page, base)
     elif base["id"] == "dias_sem_producao":
         return download_dias_sem_producao_report(context, page, base)
-    elif base["id"] == "meta_financiamento_seguro":
+    elif base["id"] in ("meta_financiamento_seguro", "meta_financiamento_seguro_mes_anterior"):
         return download_meta_financiamento_seguro_report(context, page, base)
     elif base["id"] == "carteira_parceiros":
         return download_carteira_parceiros_report(context, page, base)
@@ -878,7 +1038,17 @@ def download_bases(bases: list[dict], headless: bool = True) -> dict[str, Path]:
     resultados: dict[str, Path] = {}
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=headless)
-        context = browser.new_context(accept_downloads=True)
+        # viewport largo (não só a janela) - confirmado ao vivo em 24/08/2026
+        # que a barra de abas do dashboard "Acompanhamento Veículos"
+        # ("Digitação | Analítico | Produção | Analítico Aprov no dia | Funil
+        # por dia util | Seguros | Voltar p/ One Page") some do DOM (não é só
+        # cortada visualmente) no viewport padrão do Playwright (1280x720) -
+        # o layout do Looker parece colapsar/omitir os itens que não cabem
+        # em vez de rolar ou usar um menu "mais". Sem essas abas, o clique em
+        # "Analítico" (`apply_analitico_filters`) nunca encontra o elemento e
+        # a base "numero_contratos" falha logo no início. 1600x900 já foi
+        # suficiente para renderizar a barra inteira nesse teste.
+        context = browser.new_context(accept_downloads=True, viewport={"width": 1600, "height": 900})
         page = context.new_page()
 
         try:
