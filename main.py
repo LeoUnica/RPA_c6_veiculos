@@ -32,11 +32,8 @@ logging.basicConfig(
 logger = logging.getLogger("main")
 
 LOCK_PATH = config.LOG_DIR / "rpa.lock"
-# Mesmo limite do ExecutionTimeLimit configurado no Task Scheduler (2h) -
-# se a trava for mais velha que isso, a execução que a criou já teria
-# sido encerrada pelo próprio agendador, então é seguro considerá-la
-# abandonada (processo anterior crashou sem limpar) em vez de bloquear
-# a execução atual para sempre.
+# Mesmo limite do ExecutionTimeLimit do Task Scheduler (2h): uma trava mais
+# velha que isso é considerada abandonada (processo anterior crashou sem limpar).
 LOCK_MAX_IDADE_SEGUNDOS = 2 * 60 * 60
 
 
@@ -47,35 +44,51 @@ class ExecucaoConcorrenteError(RuntimeError):
 @contextmanager
 def _trava_execucao_unica():
     """
-    Garante que só uma execução do RPA rode por vez, usando um arquivo de
-    trava simples em `logs/rpa.lock` (sem dependência nova). Necessário
-    porque a tarefa diária no Task Scheduler foi configurada com "Start
-    When Available" (dispara assim que a máquina volta a ficar
-    disponível, mesmo que o horário programado já tenha passado) - se uma
-    execução anterior ainda estiver rodando (ex: travada numa página do
-    Looker) quando a próxima disparar, duas instâncias escrevendo ao
-    mesmo tempo nos mesmos arquivos do OneDrive poderiam corromper dados
-    de um jeito muito mais difícil de perceber/corrigir do que uma
-    execução simplesmente recusada.
-    """
-    if LOCK_PATH.exists():
-        idade_segundos = time.time() - LOCK_PATH.stat().st_mtime
-        if idade_segundos < LOCK_MAX_IDADE_SEGUNDOS:
-            raise ExecucaoConcorrenteError(
-                f"Já existe uma execução em andamento (trava criada há "
-                f"{int(idade_segundos)}s em '{LOCK_PATH}') - abortando para não "
-                "rodar duas instâncias ao mesmo tempo sobre os mesmos arquivos. "
-                "Se tiver certeza de que não há nenhuma execução ativa agora, "
-                f"apague o arquivo '{LOCK_PATH}' manualmente e rode de novo."
-            )
-        logger.warning(
-            "Trava de execução encontrada, mas já tem %ds (> %ds do limite) - "
-            "a execução anterior provavelmente travou/crashou sem limpar a "
-            "trava. Prosseguindo mesmo assim.",
-            int(idade_segundos), LOCK_MAX_IDADE_SEGUNDOS,
-        )
+    Garante que só uma execução do RPA rode por vez via arquivo de trava
+    (`logs/rpa.lock`). Necessário porque há mais de uma tarefa agendada
+    (diária/semanal/mensal) e todas usam "Start When Available": se uma
+    execução anterior ainda estiver rodando quando outra disparar - inclusive
+    duas tarefas que caiam no mesmo horário exato (ex: diária e semanal numa
+    segunda-feira) -, duas instâncias escrevendo nos mesmos arquivos do
+    OneDrive ao mesmo tempo poderiam corromper dados, ou os dois processos
+    logarem ao mesmo tempo no portal C6 e derrubar a sessão um do outro (o
+    portal só permite uma sessão ativa por usuário - ver `login`).
 
-    LOCK_PATH.write_text(str(os.getpid()), encoding="utf-8")
+    A criação do arquivo usa `os.O_CREAT | os.O_EXCL`, atômica no nível do
+    SO: se dois processos tentarem criar a trava ao mesmo tempo, o sistema
+    operacional garante que só um consegue - o outro recebe `FileExistsError`
+    na hora, sem a janela de corrida que existiria entre "verificar se existe"
+    e "escrever o arquivo" como duas operações separadas.
+    """
+    while True:
+        try:
+            fd = os.open(LOCK_PATH, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            idade_segundos = time.time() - LOCK_PATH.stat().st_mtime
+            if idade_segundos < LOCK_MAX_IDADE_SEGUNDOS:
+                raise ExecucaoConcorrenteError(
+                    f"Já existe uma execução em andamento (trava criada há "
+                    f"{int(idade_segundos)}s em '{LOCK_PATH}') - abortando para não "
+                    "rodar duas instâncias ao mesmo tempo sobre os mesmos arquivos. "
+                    "Se tiver certeza de que não há nenhuma execução ativa agora, "
+                    f"apague o arquivo '{LOCK_PATH}' manualmente e rode de novo."
+                )
+            logger.warning(
+                "Trava de execução encontrada, mas já tem %ds (> %ds do limite) - "
+                "a execução anterior provavelmente travou/crashou sem limpar a "
+                "trava. Removendo a trava velha e tentando de novo.",
+                int(idade_segundos), LOCK_MAX_IDADE_SEGUNDOS,
+            )
+            try:
+                LOCK_PATH.unlink()
+            except FileNotFoundError:
+                pass
+            continue
+        else:
+            break
+
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(str(os.getpid()))
     try:
         yield
     finally:
@@ -86,10 +99,8 @@ def _trava_execucao_unica():
 
 
 def _usa_sharepoint(base: dict) -> bool:
-    # Bases com planilha de origem local (Número de Contratos, Dias sem
-    # Produção, Meta Financiamento e Seguro, Carteira e Parceiros, Comissão
-    # à Vista) não usam SharePoint: os dados vão direto para o arquivo
-    # local (ver data_processor._process_*).
+    """Bases com planilha de origem local não usam SharePoint (dados vão direto
+    para o arquivo local, ver data_processor._process_*)."""
     modo = base["regras"].get("modo") or ""
     return not modo.startswith("planilha_origem_local")
 
@@ -97,13 +108,10 @@ def _usa_sharepoint(base: dict) -> bool:
 def run_bases(bases: list[dict], headless: bool = True):
     """
     Executa o pipeline completo para uma ou mais bases. O login no portal
-    C6 é feito **uma única vez** para todas as bases desta chamada (ver
-    looker_automation.download_bases) - não há necessidade de sair da conta
-    e entrar de novo a cada procedimento, já que cada relatório é acessado
-    a partir da mesma aba logada do WebAutorizador.
+    C6 é feito uma única vez para todas as bases desta chamada (ver
+    looker_automation.download_bases).
     """
-    # 1. Baixa a base original atual do SharePoint de cada base (para o merge
-    # ficar certo) - independente do portal C6/Looker.
+    # 1. Baixa a base original atual do SharePoint (para o merge ficar certo).
     for base in bases:
         if _usa_sharepoint(base):
             original_local = config.STAGING_DIR / f"{base['id']}_original.xlsx"
@@ -121,10 +129,7 @@ def run_bases(bases: list[dict], headless: bool = True):
         downloaded_path = downloaded_paths.get(base["id"])
         if downloaded_path is None:
             logger.error("Base '%s' pulada: download do Looker falhou (ver erro acima).", base["nome"])
-            # Registra no histórico mesmo sem ter baixado nada, para não
-            # parecer que a base simplesmente não rodou - "linhas baixadas"
-            # None (em vez de 0) distingue "falha técnica" de "sem dados no
-            # período" (ver data_processor.registrar_historico).
+            # linhas_baixadas=None (em vez de 0) distingue "falha técnica" de "sem dados no período".
             data_processor.registrar_historico(base["nome"], None, observacao="Falha no download (ver logs/rpa.log)")
             continue
         try:

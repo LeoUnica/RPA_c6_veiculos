@@ -1,24 +1,9 @@
 """
 Automação do download dos relatórios no Looker via Playwright.
 
-As 5 bases (numero_contratos, dias_sem_producao, meta_financiamento_seguro,
-carteira_parceiros, comissao_a_vista) têm cada uma seu próprio fluxo
-dedicado de navegação e download. "meta_financiamento_seguro" é baixada
-duas vezes por execução - uma para o mês atual e outra para o mês anterior
-("meta_financiamento_seguro_mes_anterior" em config.BASES, reaproveitando
-o mesmo fluxo de navegação e só mudando o período do filtro "Safra Mês")
-- são 2 downloads/entradas em config.BASES, mas contam como 1 base só
-(mesmo relatório, mesma pasta de destino no OneDrive, só planilhas
-diferentes). As 4 bases originais
-já foram validadas rodando de verdade contra o portal - "comissao_a_vista"
-ainda não (ver aviso na seção dela abaixo). Dos dois ajustes de filtro
-adicionados em 24/08/2026: "is previous month" em "Safra Mês"
-(`_selecionar_intervalo_mes_anterior`) já foi confirmado por inspeção ao
-vivo do dropdown de operadores do Looker; a troca ativa de "Dt Relatorio
-Date" para "Last 90 Days" (`_alterar_periodo_dt_relatorio`) ainda precisa
-ser confirmada rodando de verdade (ver aviso na função). O relatório é
-hospedado no Google Looker de verdade, embutido dentro do WebAutorizador
-via janelas pop-up sucessivas.
+As 5 bases têm cada uma seu próprio fluxo dedicado de navegação e
+download. O relatório é hospedado no Google Looker, embutido dentro do
+WebAutorizador via janelas pop-up sucessivas.
 
 Rodar `python looker_automation.py --base <id> --debug` abre o navegador
 visível (headless=False) para acompanhar o fluxo no site real.
@@ -27,8 +12,7 @@ visível (headless=False) para acompanhar o fluxo no site real.
 Hierarquia de seletores (ver `_click_com_prioridade`)
 --------------------------------------------------------------------------
 Todo clique/interação neste módulo segue, quando possível, esta ordem de
-prioridade (do mais estável para o menos estável), confirmada inspecionando
-o HTML real do portal e do Looker ao vivo em 20/08/2026:
+prioridade (do mais estável para o menos estável):
 
   1. id fixo do portal ASP.NET ou do Looker (ex: `#WFP2010_MPCNSRELGER`,
      `#qr-export-modal-download`, `#listbox-input-qr-export-modal-format`)
@@ -36,22 +20,15 @@ o HTML real do portal e do Looker ao vivo em 20/08/2026:
        time que mantém os relatórios.
   2. atributo semântico (href com o id do dashboard, aria-label, role,
      type) - também não é conteúdo editável do relatório.
-  3. texto visível - único recurso disponível para os elementos que o
-     Looker renderiza como `<span>`/`<div>` de styled-components sem
-     nenhum id/data-testid (comum nos menus/opções do próprio visualizador
-     Looker Studio) - nesses casos o texto é string fixa da INTERFACE do
-     Looker (Google), não do conteúdo do relatório em si, então já é
-     razoavelmente estável (só muda se o Google atualizar o produto).
-     Confirmado por inspeção ao vivo que não existe alternativa melhor
-     para: cards do catálogo, chip de filtro, itens do menu "Tile
-     actions" (Download data, Advanced data options, With visualizations
-     options applied, Formatted, All results, Excel Spreadsheet).
+  3. texto visível - único recurso para elementos que o Looker renderiza
+     como `<span>`/`<div>` de styled-components sem id/data-testid (comum
+     nos menus/opções do visualizador Looker Studio) - texto fixo da
+     INTERFACE do Looker (Google), então razoavelmente estável.
 
 Quando existe um seletor de nível mais alto confirmado, ele é tentado
-primeiro; o texto correspondente que já funcionava antes fica como
-fallback automático (`_click_com_prioridade`), então uma mudança no
-id/atributo interno do Looker não quebra a execução - só loga um aviso
-pedindo para revalidar.
+primeiro; o texto que já funcionava antes fica como fallback automático
+(`_click_com_prioridade`), então uma mudança no id/atributo interno do
+Looker não quebra a execução - só loga um aviso pedindo para revalidar.
 """
 
 import argparse
@@ -79,9 +56,8 @@ ICON_MORE_VERT_PATH = (
 )
 
 # --------------------------------------------------------------------------
-# ids/atributos fixos confirmados por inspeção ao vivo do DOM real (não são
-# texto de relatório, então não mudam se o time renomear um botão/aba) -
-# centralizados aqui para não ficar espalhado pelo módulo.
+# ids/atributos fixos do DOM real (não são texto de relatório, então não
+# mudam se o time renomear um botão/aba) - centralizados aqui.
 # --------------------------------------------------------------------------
 ID_LINK_RELATORIOS_GERENCIAIS = "WFP2010_MPCNSRELGER"  # <a id="..."> no menu ASP.NET do portal, usado pelas 5 bases
 ID_COMBOBOX_FORMATO_EXPORT = "listbox-input-qr-export-modal-format"  # modal de export do Looker (chrome, todas as bases)
@@ -101,26 +77,17 @@ def _click_com_prioridade(
     `tentativas`: lista de (descrição, função que retorna o Locator) em
     ordem de prioridade. Tenta cada uma, usando a primeira que encontrar
     >=1 elemento. Loga um AVISO (não erro) se precisou cair para um nível
-    mais baixo que o primeiro - a execução não quebra (o fallback
-    funcionou), mas é um sinal de que o seletor prioritário pode ter
-    parado de bater e vale revalidar. Levanta erro só se NENHUM nível
-    funcionar. Retorna a descrição da tentativa que funcionou.
+    mais baixo que o primeiro - a execução não quebra, mas é sinal de que
+    o seletor prioritário pode ter parado de bater. Levanta erro só se
+    NENHUM nível funcionar. Retorna a descrição da tentativa que funcionou.
 
-    `timeout=None` (padrão) usa o timeout padrão do próprio Playwright
-    (30s) - igual ao comportamento original de todo `.click()` deste
-    módulo, que nunca passava timeout explícito. Só informe um valor
-    aqui se o clique original já tinha um timeout customizado.
+    `timeout=None` (padrão) usa o timeout padrão do Playwright (30s).
 
     `no_wait_after=True` pula a espera padrão do Playwright por uma
     "navegação agendada" depois do clique - útil para botões que disparam
-    um download em vez de navegar (o clique em si funciona, mas o
-    Playwright fica parado em "waiting for scheduled navigations to
-    finish" até estourar o timeout, mesmo com o download já capturado por
-    `expect_download` - confirmado ao vivo em 24/08/2026 com o botão
-    "Download" do modal de export, que passou a travar de forma
-    consistente depois que o volume de dados exportado aumentou (filtro
-    "Year To Date" em vez de "Last 90 Days"), tornando a demora do Looker
-    pra gerar o arquivo maior que a espera de navegação).
+    um download em vez de navegar (o Playwright fica parado em "waiting
+    for scheduled navigations to finish" até estourar o timeout, mesmo com
+    o download já capturado por `expect_download`).
     """
     ultimo_erro = None
     for i, (descricao, factory) in enumerate(tentativas):
@@ -147,21 +114,29 @@ def _click_com_prioridade(
     ) from ultimo_erro
 
 
+def _abrir_painel_filtros(final_page: Page):
+    """
+    Abre o painel de filtros (botão "NN filters", o número varia por
+    aba) - texto é o único seletor disponível: o botão é um
+    styled-components sem id/data-testid/aria-label (confirmado por
+    inspeção ao vivo), mas "filters" é rótulo fixo do próprio Looker
+    Studio, não editável pelo time. Compartilhado por todas as bases que
+    têm painel de filtros (Número de Contratos, Dias sem Produção, Meta
+    Financiamento e Seguro, Carteira e Parceiros).
+    """
+    final_page.get_by_text("filters", exact=False).first.click()
+    final_page.wait_for_timeout(1500)
+
+
 def _confirmar_dados_cadastrais_se_necessario(page: Page):
     """
     Depois do login, o portal às vezes exige passar por uma tela
-    "Atualizar meus Dados Cadastrais" (e-mail/celular já vêm preenchidos,
-    "Necessário atualizar os dados cadastrais... para validações futuras")
-    antes de liberar o acesso normal - sem isso, o menu "Relatórios" nunca
-    aparece e a navegação trava logo no primeiro passo (confirmado ao vivo
-    em 18/08/2026, derrubando as 5 bases de uma vez). Se a tela aparecer,
-    clica em "Confirmar" mantendo os dados como já estão preenchidos; se
-    não aparecer (caso normal, na maioria das execuções), não faz nada.
-
-    Tela condicional (só aparece às vezes) - ainda não foi possível
-    inspecionar o HTML real dela ao vivo para confirmar se o botão tem um
-    id/atributo estável (diferente do resto do login, que já usa ids
-    reais - ver `login`). Por ora, texto é o único seletor confirmado.
+    "Atualizar meus Dados Cadastrais" antes de liberar o acesso normal -
+    sem isso, o menu "Relatórios" nunca aparece e a navegação trava logo no
+    primeiro passo. Se a tela aparecer, clica em "Confirmar" mantendo os
+    dados como já estão preenchidos; se não aparecer (caso normal), não
+    faz nada. Tela condicional sem id/atributo estável conhecido - texto é
+    o único seletor disponível.
     """
     page.wait_for_timeout(1500)
     confirmar = page.get_by_text("Confirmar", exact=True)
@@ -178,18 +153,16 @@ def _confirmar_dados_cadastrais_se_necessario(page: Page):
 def login(page: Page):
     """
     Login no portal C6 Consig (WebAutorizador - página ASP.NET clássica,
-    sem <label>). Seletores confirmados inspecionando o HTML real da página:
+    sem <label>):
       - Usuário: input#EUsuario_CAMPO
       - Senha:   input#ESenha_CAMPO
       - Entrar:  <a id="lnkEntrar"> (link com postback, não é um <button>)
-    Já são todos ids fixos de controle ASP.NET - topo da hierarquia,
-    nenhuma mudança necessária aqui.
+    Todos ids fixos de controle ASP.NET - topo da hierarquia de seletores.
 
     O portal costuma mostrar um confirm() JS ("Usuário já autenticado em
-    outra estação. Deseja desconectar-se...") quando já existe uma sessão
-    ativa - aceitamos automaticamente para forçar a nova sessão. Também
-    pode exigir confirmar os dados cadastrais antes de liberar o acesso
-    (ver `_confirmar_dados_cadastrais_se_necessario`).
+    outra estação...") quando já existe uma sessão ativa - aceitamos
+    automaticamente para forçar a nova sessão. Também pode exigir
+    confirmar os dados cadastrais (ver `_confirmar_dados_cadastrais_se_necessario`).
     """
     page.on("dialog", lambda dialog: dialog.accept())
 
@@ -215,15 +188,12 @@ def _abrir_catalogo_auto(context: BrowserContext, page: Page) -> Page:
     clicar no link do relatório específico daquela base.
 
     "Relatórios Gerenciais" tem id fixo (`WFP2010_MPCNSRELGER`, controle
-    ASP.NET do menu do portal) - usado como topo da hierarquia, com o
-    texto (comportamento original) como fallback automático. O card
-    "Auto" é um `<h3>` de styled-components sem nenhum id/data-testid
-    (confirmado por inspeção ao vivo) - texto é o único seletor possível.
+    ASP.NET do menu do portal) - usado como topo da hierarquia, com o texto
+    como fallback automático. O card "Auto" é um `<h3>` sem id/data-testid
+    - texto é o único seletor possível.
     """
-    # "Relatórios" só precisa de hover (não é clique, então não passa por
-    # _click_com_prioridade) - o `role="button"` do link não tem um name
-    # acessível único (reaproveitado por outros itens do menu superior),
-    # então o texto continua sendo o seletor mais confiável aqui.
+    # "Relatórios" só precisa de hover (não passa por _click_com_prioridade) -
+    # o `role="button"` do link não tem name acessível único.
     page.get_by_text("Relatórios", exact=True).first.hover()
     page.wait_for_timeout(500)  # tempo do dropdown CSS abrir antes do próximo elemento ficar clicável
 
@@ -284,33 +254,24 @@ def _clicar_link_relatorio_e_abrir_popup(
 
 # --------------------------------------------------------------------------
 # Fluxo dedicado - base "numero_contratos" (Acompanhamento Veículos > Analítico)
-#
-# Este fluxo foi validado rodando de verdade contra o portal (não é mais um
-# esqueleto/chute): o relatório é hospedado no Google Looker de verdade,
-# embutido dentro do WebAutorizador via duas janelas pop-up sucessivas.
 # --------------------------------------------------------------------------
 
 def open_acompanhamento_veiculos_analitico(context: BrowserContext, page: Page) -> Page:
     """
     Navega até o dashboard "Acompanhamento Veículos" e retorna a Page do
-    Looker onde ele foi aberto (é uma nova aba/pop-up, não a mesma página).
+    Looker onde ele foi aberto (nova aba/pop-up).
 
-    Fluxo real confirmado (ver `_abrir_catalogo_auto` para os 3 primeiros
-    passos, compartilhados com as outras 4 bases):
-      1. "Relatórios" (hover) > "Relatórios Gerenciais" (pop-up com o
-         catálogo) > card "Auto".
-      2. O card "Acompanhamento Veículos" tem DOIS elementos com o mesmo
-         texto: o título do card (não clicável) e, mais abaixo, o link de
-         fato - `_clicar_link_relatorio_e_abrir_popup` tenta isolar pelo
-         role="link" primeiro, com posição (`.nth(1)`) como fallback.
-      3. Clicar nesse link abre OUTRA pop-up com o dashboard final
-         (corp_consignado_embed::00050_producao).
+    `_abrir_catalogo_auto` cuida de "Relatórios" > "Relatórios Gerenciais" >
+    card "Auto" (compartilhado com as outras bases). O card "Acompanhamento
+    Veículos" tem DOIS elementos com o mesmo texto (título + link de fato)
+    - `_clicar_link_relatorio_e_abrir_popup` isola pelo role="link"
+    primeiro, com posição (`.nth(1)`) como fallback.
     """
     catalogo = _abrir_catalogo_auto(context, page)
     return _clicar_link_relatorio_e_abrir_popup(context, catalogo, "Acompanhamento Veículos", indice=1)
 
 
-HREF_DASHBOARD_ANALITICO_NUMERO_CONTRATOS = "corp_consignado_embed::00087"  # id fixo do dashboard "Analítico" (numero_contratos) - confirmado pelo usuário colando o HTML real do link em 24/08/2026: <a href="/embed/dashboards/corp_consignado_embed::00087?...">❗ Analítico</a>
+HREF_DASHBOARD_ANALITICO_NUMERO_CONTRATOS = "corp_consignado_embed::00087"  # id fixo do dashboard "Analítico" (numero_contratos)
 
 
 def apply_analitico_filters(final_page: Page, filtros: dict):
@@ -319,20 +280,15 @@ def apply_analitico_filters(final_page: Page, filtros: dict):
       - "Tipo Exibição" -> mantém somente a opção informada (ex: "Valor")
       - "Dt Relatorio Date" -> período relativo (ex: "Last 90 Days")
 
-    O dashboard abre inicialmente na aba "Produção" - NÃO usamos essa aba,
-    só serve de ponto de partida até clicarmos em "Analítico".
+    O dashboard abre inicialmente na aba "Produção" - só serve de ponto de
+    partida até clicarmos em "Analítico".
 
-    A barra de abas ("Digitação | Analítico | Produção | Analítico Aprov no
-    dia | Funil por dia util | Seguros | Voltar p/ One Page") é a navegação
-    de página nativa do Looker Studio, renderizada como `<a href="/embed/
-    dashboards/{HREF_DASHBOARD_ANALITICO_NUMERO_CONTRATOS}?...">` - href
-    confirmado pelo usuário colando o HTML real do link em 24/08/2026, é o
-    seletor mais estável (não depende de texto/ícone). Cada aba também tem
-    um ícone antes do rótulo (ex: "❗ Analítico", "💲Produção"), então o texto
-    NÃO é exatamente "Analítico" - por isso o fallback por texto usa uma
-    regex que exige terminar em "Analítico" (aceita qualquer ícone/prefixo
-    na frente, mas ainda exclui "Analítico Aprov no dia", que não termina
-    em "Analítico").
+    A barra de abas é navegação nativa do Looker Studio, renderizada como
+    `<a href="/embed/dashboards/{HREF_DASHBOARD_ANALITICO_NUMERO_CONTRATOS}?...">`
+    - href é o seletor mais estável (não depende de texto/ícone). Cada aba
+    tem um ícone antes do rótulo (ex: "❗ Analítico"), então o texto NÃO é
+    exatamente "Analítico" - o fallback por texto usa regex que exige
+    terminar em "Analítico" (exclui "Analítico Aprov no dia").
     """
     logger.info("Aguardando a aba 'Analítico' aparecer no dashboard...")
     aba_analitico = final_page.locator(f'a[href*="{HREF_DASHBOARD_ANALITICO_NUMERO_CONTRATOS}"]')
@@ -354,13 +310,7 @@ def apply_analitico_filters(final_page: Page, filtros: dict):
     logger.info("Aba 'Analítico' selecionada.")
     final_page.wait_for_timeout(5000)
 
-    # Abre o painel de filtros (botão "NN filters", o número varia por
-    # aba) - texto é o único seletor disponível: o botão é um
-    # styled-components sem id/data-testid/aria-label (confirmado por
-    # inspeção ao vivo), mas "filters" é rótulo fixo do próprio Looker
-    # Studio, não editável pelo time.
-    final_page.get_by_text("filters", exact=False).first.click()
-    final_page.wait_for_timeout(1500)
+    _abrir_painel_filtros(final_page)
 
     # --- Tipo Exibição ---
     # O chip de valor do filtro mostra o texto atual (ex: "is Qtde" ou
@@ -374,15 +324,48 @@ def apply_analitico_filters(final_page: Page, filtros: dict):
     final_page.get_by_text(filtros["tipo_exibicao"], exact=True).click()
     final_page.wait_for_timeout(500)
 
-    # --- Dt Relatorio Date ---
-    # Pedido do time em 24/08/2026: buscar sempre os últimos 90 dias
-    # corridos (janela móvel), independente do mês/dia de execução - antes
-    # bastava conferir o padrão salvo no dashboard ("Last 30 Days",
-    # confirmado via querystring "Dt+Relatorio+Date=30+day"); agora
-    # trocamos o valor ativamente a cada execução (ver
-    # `_alterar_periodo_dt_relatorio`).
+    # --- Dt Relatorio Date --- (ver `_alterar_periodo_dt_relatorio`)
     _alterar_periodo_dt_relatorio(final_page, filtros["periodo_dt_relatorio"])
     logger.info("Filtros da aba 'Analítico' configurados com sucesso.")
+
+
+def apply_analitico_filters_ano_fechado(final_page: Page, tipo_exibicao: str, ano: int):
+    """
+    Variante de `apply_analitico_filters` usada só na carga única de um
+    ano fechado (ex: 2025), fora do fluxo diário normal: mesmos passos de
+    selecionar a aba "Analítico" e "Tipo Exibição", mas troca "Dt
+    Relatorio Date" para um intervalo customizado (1º de janeiro a 31 de
+    dezembro do ano informado) em vez de um preset relativo - ver
+    `_selecionar_intervalo_customizado_dt_relatorio`.
+    """
+    logger.info("Aguardando a aba 'Analítico' aparecer no dashboard...")
+    aba_analitico = final_page.locator(f'a[href*="{HREF_DASHBOARD_ANALITICO_NUMERO_CONTRATOS}"]')
+    try:
+        aba_analitico.first.wait_for(state="visible", timeout=15000)
+    except Exception:
+        logger.warning(
+            "Aba 'Analítico' não encontrada pelo href do dashboard - tentando pelo texto (fallback)."
+        )
+        aba_analitico = final_page.get_by_text(re.compile(r"Analítico$", re.IGNORECASE))
+        try:
+            aba_analitico.first.wait_for(state="visible", timeout=45000)
+        except Exception:
+            _logar_diagnostico_aba_analitico_nao_encontrada(final_page)
+            raise
+
+    aba_analitico.first.click()
+    logger.info("Aba 'Analítico' selecionada.")
+    final_page.wait_for_timeout(5000)
+
+    _abrir_painel_filtros(final_page)
+
+    final_page.get_by_text(re.compile(r"^is "), exact=False).first.click()
+    final_page.wait_for_timeout(500)
+    final_page.get_by_text(tipo_exibicao, exact=True).click()
+    final_page.wait_for_timeout(500)
+
+    _selecionar_intervalo_customizado_dt_relatorio(final_page, f"{ano}/01/01", f"{ano}/12/31")
+    logger.info("Filtros da aba 'Analítico' configurados para o ano fechado %d.", ano)
 
 
 def _logar_diagnostico_aba_analitico_nao_encontrada(final_page: Page):
@@ -419,18 +402,11 @@ def _logar_diagnostico_aba_analitico_nao_encontrada(final_page: Page):
 def _alterar_periodo_dt_relatorio(final_page: Page, valor_alvo: str):
     """
     Troca o filtro "Dt Relatorio Date" para o preset informado (ex:
-    "Last 90 Days", "Year To Date").
-
-    Confirmado por screenshot real enviado pelo usuário em 24/08/2026: o
-    filtro NÃO é um operador "is in the last N days" com campo numérico
-    (suposição incorreta da implementação anterior, que travava 30s
-    esperando um `input[type="number"]` que nunca existiu) - é um dropdown
-    com abas "Presets"/"Custom" e uma lista fixa de opções clicáveis
-    (Today, Yesterday, Last 7 Days, Last 14 Days, Last 30 Days, Last 90
-    Days, Year To Date, More...). Clicar no chip do valor atual (o padrão
-    salvo no dashboard é "Last 30 Days", visível no screenshot) abre esse
-    dropdown; basta clicar no preset alvo na lista - qualquer texto exato
-    da lista de presets serve, não só o padrão "Last N Days".
+    "Last 90 Days", "Year To Date"). É um dropdown com abas
+    "Presets"/"Custom" e uma lista fixa de opções clicáveis (Today,
+    Yesterday, Last 7 Days, ..., Year To Date, More...) - clicar no chip do
+    valor atual abre o dropdown, então basta clicar no preset alvo pelo
+    texto exato.
     """
     logger.info("Alterando 'Dt Relatorio Date' para '%s'...", valor_alvo)
 
@@ -461,12 +437,54 @@ def _alterar_periodo_dt_relatorio(final_page: Page, valor_alvo: str):
         logger.info("'Dt Relatorio Date' configurado para '%s'.", valor_alvo)
 
 
+def _selecionar_intervalo_customizado_dt_relatorio(final_page: Page, data_inicio: str, data_fim: str):
+    """
+    Troca o filtro "Dt Relatorio Date" para um intervalo de datas livre
+    (aba "Custom" do dropdown, ao lado de "Presets") - usado só para a
+    carga única de um ano fechado (ex: 2025), fora do fluxo diário normal
+    (que usa `_alterar_periodo_dt_relatorio` com um preset).
+
+    `data_inicio`/`data_fim` no formato "YYYY/MM/DD" (ex: "2025/01/01").
+    Confirmado ao vivo contra o portal em 25/08/2026: por baixo do texto
+    exibido existem `input[data-testid="date-from-text-input"]` e
+    `input[data-testid="date-to-text-input"]` editáveis diretamente
+    (`.fill()`), sem precisar abrir o calendário visual.
+    """
+    logger.info("Alterando 'Dt Relatorio Date' para intervalo customizado %s - %s...", data_inicio, data_fim)
+
+    chip_periodo = final_page.get_by_text(re.compile(r"^Last \d+ Days?$", re.IGNORECASE))
+    chip_periodo.first.wait_for(state="visible", timeout=30000)
+    chip_periodo.first.click(force=True)
+    final_page.wait_for_timeout(800)
+
+    final_page.get_by_text("Custom", exact=True).click()
+    final_page.wait_for_timeout(800)
+
+    final_page.locator('input[data-testid="date-from-text-input"]').fill(data_inicio)
+    final_page.wait_for_timeout(300)
+    final_page.locator('input[data-testid="date-to-text-input"]').fill(data_fim)
+    final_page.wait_for_timeout(300)
+    final_page.keyboard.press("Enter")
+    final_page.wait_for_timeout(800)
+    final_page.keyboard.press("Escape")
+    final_page.wait_for_timeout(500)
+
+    valor_esperado = f"{data_inicio} - {data_fim}"
+    if final_page.get_by_text(valor_esperado, exact=False).count() == 0:
+        logger.warning(
+            "Após tentar trocar 'Dt Relatorio Date' para '%s', "
+            "o chip não confirmou esse valor. Revalidar visualmente com --debug.",
+            valor_esperado,
+        )
+    else:
+        logger.info("'Dt Relatorio Date' configurado para '%s'.", valor_esperado)
+
+
 def update_report_data(final_page: Page):
     """
-    Clica no botão 'Update' para atualizar os dados do relatório. Já usa
+    Clica no botão 'Update' para atualizar os dados do relatório. Usa
     `aria-labelledby="page-freshness-indicator"` - atributo semântico
-    fixo confirmado por inspeção ao vivo, sem dependência de texto -
-    topo da hierarquia, nenhuma mudança necessária.
+    fixo, topo da hierarquia de seletores.
     """
     final_page.locator('button[aria-labelledby="page-freshness-indicator"]').click()
     # espera fixa: networkidle não é confiável nesse dashboard (polling
@@ -484,18 +502,14 @@ def _find_tile_actions_button(final_page: Page, near: Locator, titulo_tile: str 
          até o tile É plausivelmente o próprio título dele - caso de
          "Analítico"/`secao_tabela`, que ficam numa faixa de título acima
          da tabela): tenta por `role="button"` + `aria-label` contendo
-         `titulo_tile` (confirmado por inspeção ao vivo: o botão real tem
-         `aria-label="{Título do tile} - Tile actions"`) - atributo
-         semântico, não depende de posição na tela.
-      2. Heurística geométrica original: o ícone svg (`ICON_MORE_VERT_PATH`)
-         é reaproveitado ~40x na página (cada coluna do crosstab tem um
-         mini-ícone igual no cabeçalho, e há um menu global de dashboard
-         também com o mesmo ícone) - filtramos por altura do botão (os de
-         tile ficam com 24px, diferente dos 36px do menu global e dos
-         ~21px dos ícones de coluna) e pegamos o mais próximo em Y do
-         elemento `near`. Usada sempre que não há `titulo_tile` confiável
-         (ex: SLA/Carteira, onde `near` é um cabeçalho de coluna, não o
-         título do tile) ou como fallback se a tentativa 1 não achar nada.
+         `titulo_tile` (o botão real tem `aria-label="{Título do tile} -
+         Tile actions"`) - atributo semântico, não depende de posição.
+      2. Heurística geométrica: o ícone svg (`ICON_MORE_VERT_PATH`) é
+         reaproveitado ~40x na página (colunas do crosstab + menu global) -
+         filtramos por altura do botão (tile = 24px, diferente do menu
+         global e dos ícones de coluna) e pegamos o mais próximo em Y do
+         elemento `near`. Usada quando não há `titulo_tile` confiável (ex:
+         SLA/Carteira) ou como fallback se a tentativa 1 não achar nada.
     """
     if titulo_tile:
         candidato = final_page.get_by_role(
@@ -529,24 +543,16 @@ def _complete_download_dialog(final_page: Page, base_id: str, download_timeout_m
     A partir do menu "Tile actions" já aberto, clica em "Download data",
     seleciona o formato Excel, expande "Advanced data options" e marca as
     opções de exportação completa antes de baixar. Compartilhado por todas
-    as bases que usam este mesmo fluxo de download do Looker.
+    as bases que usam este fluxo de download do Looker.
 
-    O modal de export é chrome fixo do Looker (mesma estrutura em todas as
-    5 bases, não depende do conteúdo do relatório) - o combobox de formato
-    e o botão final "Download" têm id fixo confirmado por inspeção ao vivo
+    O modal de export é chrome fixo do Looker (mesma estrutura nas 5
+    bases) - combobox de formato e botão "Download" têm id fixo
     (`#listbox-input-qr-export-modal-format`, `#qr-export-modal-download`),
-    usados como topo da hierarquia com o comportamento original (role) como
-    fallback. As demais opções do modal ("Download data", "Excel
-    Spreadsheet...", "Advanced data options", "With visualizations options
-    applied", "Formatted", "All results") são `<span>`/`<legend>` de
-    styled-components sem nenhum id/data-testid (confirmado por inspeção
-    ao vivo) - texto é o único seletor possível, mas são rótulos fixos da
-    INTERFACE do Looker (Google), não do relatório, então já são
-    razoavelmente estáveis.
+    com role como fallback. As demais opções do modal são rótulos fixos da
+    interface do Looker sem id - texto é o único seletor possível.
 
     `download_timeout_ms` pode ser aumentado para bases com volumes maiores
-    de dados (ex: Carteira e Parceiros, que baixa o ano inteiro) - o Looker
-    demora mais para gerar o arquivo antes do download começar.
+    (ex: Carteira e Parceiros, que baixa o ano inteiro).
     """
     final_page.get_by_text("Download data", exact=True).click()
     final_page.wait_for_timeout(1500)
@@ -605,11 +611,8 @@ def download_analitico_spreadsheet(final_page: Page, base_id: str) -> Path:
     tile_button.click(force=True)
     final_page.wait_for_timeout(1000)
 
-    # timeout maior que o padrão (60s) - desde que o filtro "Dt Relatorio
-    # Date" passou a ser "Year To Date" (24/08/2026), o Looker exporta o
-    # ano inteiro em vez de só 90 dias, e demora mais para gerar o arquivo
-    # antes do download começar (mesmo motivo do timeout maior usado por
-    # Carteira e Parceiros, que também baixa o ano inteiro).
+    # timeout maior que o padrão (60s): filtro "Dt Relatorio Date" = "Year To
+    # Date" exporta o ano inteiro, e o Looker demora mais para gerar o arquivo.
     return _complete_download_dialog(final_page, base_id, download_timeout_ms=240000)
 
 
@@ -625,7 +628,7 @@ def download_numero_contratos_report(context: BrowserContext, page: Page, base: 
 
 # --------------------------------------------------------------------------
 # Fluxo dedicado - base "dias_sem_producao" (SLA - Última Atuação Comercial
-# - Analítico), validado rodando de verdade contra o portal.
+# - Analítico)
 # --------------------------------------------------------------------------
 
 def open_sla_analitico(context: BrowserContext, page: Page, base: dict) -> Page:
@@ -641,27 +644,28 @@ def open_sla_analitico(context: BrowserContext, page: Page, base: dict) -> Page:
     return _clicar_link_relatorio_e_abrir_popup(context, catalogo, base["link_relatorio"])
 
 
-def verify_referencia_month_filter(final_page: Page):
+def apply_referencia_month_ano(final_page: Page, ano: int):
     """
-    Abre o painel de filtros e confere que "Referencia Month" já está em
-    "is this month" (confirmado via querystring "Referencia+Month=this+
-    month"). Só avisa no log se algum dia vier diferente - o clique para
-    trocar esse filtro específico (um seletor de data relativa composto,
-    tipo "is this" + "month") ainda não foi mapeado/validado.
+    Troca "Referencia Month" (mesmo widget de "Safra Mês") para "is in the
+    year {ano}" - usado tanto no fluxo diário normal da base
+    "dias_sem_producao" (com `ano = date.today().year`, para buscar o ano
+    corrente inteiro a cada execução, não só o mês atual) quanto na carga
+    única de um ano fechado de histórico (ex: 2025, via
+    `download_ano_fechado_report`). Confirmado ao vivo contra o portal em
+    25/08/2026 - ver `_selecionar_ano`.
+
+    O padrão salvo no dashboard é "is this month" - por isso sempre
+    precisamos trocar, mesmo no fluxo diário.
     """
-    final_page.get_by_text("filters", exact=False).first.click()
-    final_page.wait_for_timeout(1500)
-
-    if final_page.get_by_text("is this month", exact=True).count() == 0:
-        logger.warning(
-            "Filtro 'Referencia Month' não está em 'is this month' - ajuste "
-            "manual pode ser necessário (fluxo de troca ainda não mapeado)."
-        )
-    # Não precisa fechar o painel de filtros - o botão "Update" continua
-    # clicável normalmente com o painel aberto.
+    _abrir_painel_filtros(final_page)
+    final_page.get_by_text("is this month", exact=True).click(force=True)
+    final_page.wait_for_timeout(800)
+    _selecionar_ano(final_page, ano)
+    final_page.keyboard.press("Escape")
+    final_page.wait_for_timeout(500)
 
 
-def download_sla_analitico_spreadsheet(final_page: Page, base_id: str) -> Path:
+def download_sla_analitico_spreadsheet(final_page: Page, base_id: str, download_timeout_ms: int = 60000) -> Path:
     """
     Localiza o botão "Tile actions" da tabela SLA Analítico usando como
     referência o cabeçalho de coluna "Cnpj Da Loja" - esse relatório não
@@ -676,6 +680,9 @@ def download_sla_analitico_spreadsheet(final_page: Page, base_id: str) -> Path:
     mantido na heurística geométrica, já baseada em atributo (svg path do
     ícone) + posição, que é a estratégia correta quando não há faixa de
     título disponível para usar como sinal semântico.
+
+    `download_timeout_ms` pode ser aumentado para downloads maiores (ex:
+    carga de ano fechado inteiro, ver `download_ano_fechado_report`).
     """
     referencia = final_page.get_by_text("Cnpj Da Loja", exact=True).first
     referencia.scroll_into_view_if_needed(timeout=90000)
@@ -687,13 +694,21 @@ def download_sla_analitico_spreadsheet(final_page: Page, base_id: str) -> Path:
     tile_button.click(force=True)
     final_page.wait_for_timeout(1000)
 
-    return _complete_download_dialog(final_page, base_id)
+    return _complete_download_dialog(final_page, base_id, download_timeout_ms=download_timeout_ms)
 
 
 def download_dias_sem_producao_report(context: BrowserContext, page: Page, base: dict) -> Path:
-    """Fluxo completo específico da base 'dias_sem_producao'."""
+    """
+    Fluxo completo específico da base 'dias_sem_producao'. Busca o ANO
+    CORRENTE inteiro a cada execução (filtro "Referencia Month" -> "is in
+    the year", ver `apply_referencia_month_ano`), não só o mês atual -
+    igual ao padrão já usado por Número de Contratos (Year To Date) e
+    Carteira e Parceiros (Referência = Este Ano). O acúmulo e a marcação
+    de cor continuam cuidando de não duplicar nem perder linha (ver
+    `data_processor._process_dias_sem_producao`).
+    """
     final_page = open_sla_analitico(context, page, base)
-    verify_referencia_month_filter(final_page)
+    apply_referencia_month_ano(final_page, date.today().year)
     update_report_data(final_page)
     path = download_sla_analitico_spreadsheet(final_page, base["id"])
     final_page.close()
@@ -702,8 +717,7 @@ def download_dias_sem_producao_report(context: BrowserContext, page: Page, base:
 
 # --------------------------------------------------------------------------
 # Fluxo dedicado - base "meta_financiamento_seguro" (Apuração Parceiro -
-# Resumo > Bloco de Metas - Por Filial), validado rodando de verdade contra
-# o portal.
+# Resumo > Bloco de Metas - Por Filial)
 # --------------------------------------------------------------------------
 
 def _dia_util_mg(dia: date) -> bool:
@@ -741,34 +755,33 @@ def open_resumo_parceiro(context: BrowserContext, page: Page, base: dict) -> Pag
     return _clicar_link_relatorio_e_abrir_popup(context, catalogo, base["link_relatorio"])
 
 
-def _selecionar_intervalo_mes_anterior(final_page: Page):
+def _selecionar_ano(final_page: Page, ano: int):
     """
-    Troca o filtro "Safra Mês" para "is previous month" - operador nativo
-    do Looker que sempre aponta pro mês civil anterior ao mês corrente
-    (independente do dia de hoje), usado só pela base
-    "meta_financiamento_seguro_mes_anterior" (ver `apply_safra_mes_filter`,
-    parâmetro `periodo`).
+    Troca o filtro de período (Safra Mês ou Referencia Month - mesmo
+    widget) para "is in the year {ano}" - usado tanto no fluxo diário/
+    mensal de Meta Financiamento e Seguro e Dias sem Produção (ano
+    corrente, buscando o ano inteiro a cada execução) quanto na carga
+    única de um ano fechado de histórico (ex: 2025).
 
-    Confirmado por inspeção ao vivo do dropdown de operadores em
-    24/08/2026: ao abrir o combobox de operador (clicando no valor atual,
-    "is in the last") aparece a lista completa - "is in the last", "is on
-    the day", "is in range", "is before", "is on or after", "is in the
-    year", "is in the month", "is this", "is next", "is previous", "is",
-    "is null", "is not null", "is any time", "matches a user attribute",
-    "matches (advanced)" - com "is previous" disponível como opção nativa
-    (não precisa simular um intervalo de datas manualmente). Ao clicar em
-    "is previous" a unidade ao lado já vem preenchida em "month" por
-    padrão (mesmo comportamento do ramo "is this month" em
-    `apply_safra_mes_filter`), então não precisa trocar o combobox de
-    unidade - o chip final já mostra "is previous month" direto.
+    Confirmado ao vivo contra o portal em 25/08/2026: ao abrir a lista de
+    operadores existe a opção nativa "is in the year", que abre um campo
+    numérico pré-preenchido com o ano corrente - basta sobrescrever com o
+    ano desejado. O combobox de operador é sempre o primeiro
+    `input[role="combobox"]` do mini-widget que abre ao clicar no chip do
+    filtro - o texto atual dele varia por base ("is in the last" no padrão
+    de Safra Mês/Meta Financiamento e Seguro, "is this" no padrão de
+    Referencia Month/Dias sem Produção), por isso é localizado pela
+    posição/role em vez de um texto fixo.
     """
-    final_page.get_by_text("is in the last", exact=True).first.click(force=True)
+    final_page.locator('input[type="text"][role="combobox"]').first.click(force=True)
     final_page.wait_for_timeout(800)
-    final_page.get_by_text("is previous", exact=True).first.click(force=True)
+    final_page.get_by_role("option", name="is in the year", exact=True).click(force=True)
     final_page.wait_for_timeout(800)
+    final_page.locator('input[type="number"]').first.fill(str(ano))
+    final_page.wait_for_timeout(500)
 
 
-def apply_safra_mes_filter(final_page: Page, periodo: str = "mes_atual"):
+def apply_safra_mes_filter(final_page: Page, periodo: str = "mes_atual", ano: int | None = None):
     """
     Abre o painel de filtros e configura "Safra Mês" (sempre o primeiro
     filtro do painel - mesmo truque de regex "^is " usado em Número de
@@ -777,24 +790,27 @@ def apply_safra_mes_filter(final_page: Page, periodo: str = "mes_atual"):
     onde o padrão já vinha certo).
 
     `periodo`:
-      - "mes_atual" (padrão): mês corrente.
+      - "mes_atual" (padrão): mês corrente - usado pela base
+        "comissao_a_vista".
           - Caso normal: muda para "is this" + "month".
           - Caso especial (`deve_usar_janela_curta_safra_mes()`): muda para
             "is in the last" + "3" + "days", para não perder a apuração de
             fim do mês anterior quando não houve dia útil antes do dia 01.
-      - "mes_anterior": mês civil anterior completo (1º ao último dia) -
-        usado pela base "meta_financiamento_seguro_mes_anterior" (ver
-        `_selecionar_intervalo_mes_anterior`). Pedido do time em
-        24/08/2026.
+      - "ano": ano específico (`ano`, obrigatório nesse caso) - "is in the
+        year {ano}" (ver `_selecionar_ano`). Usado pelo fluxo diário/
+        mensal de "meta_financiamento_seguro" (ano corrente, buscando o
+        ano inteiro a cada execução) e pela carga única de histórico
+        fechado (ver `download_ano_fechado_report`).
     """
-    final_page.get_by_text("filters", exact=False).first.click()
-    final_page.wait_for_timeout(1500)
+    _abrir_painel_filtros(final_page)
 
     final_page.get_by_text(re.compile(r"^is "), exact=False).first.click()
     final_page.wait_for_timeout(800)
 
-    if periodo == "mes_anterior":
-        _selecionar_intervalo_mes_anterior(final_page)
+    if periodo == "ano":
+        if ano is None:
+            raise ValueError("periodo='ano' exige o parâmetro 'ano'.")
+        _selecionar_ano(final_page, ano)
         final_page.keyboard.press("Escape")
         final_page.wait_for_timeout(500)
         return
@@ -818,13 +834,18 @@ def apply_safra_mes_filter(final_page: Page, periodo: str = "mes_atual"):
     final_page.wait_for_timeout(500)
 
 
-def download_bloco_metas_spreadsheet(final_page: Page, base_id: str, secao_tabela: str) -> Path:
+def download_bloco_metas_spreadsheet(
+    final_page: Page, base_id: str, secao_tabela: str, download_timeout_ms: int = 60000,
+) -> Path:
     """
     Rola até a seção "Bloco de Metas - Por Filial" (faixa de título cinza
     acima da tabela, igual ao padrão de "Analítico" em Número de
     Contratos) e completa o download. Passa `secao_tabela` como dica de
     título para `_find_tile_actions_button` tentar primeiro por
     aria-label (mesmo padrão de `download_analitico_spreadsheet`).
+
+    `download_timeout_ms` pode ser aumentado para downloads maiores (ex:
+    carga de ano fechado inteiro, ver `download_ano_fechado_report`).
     """
     secao = final_page.get_by_text(secao_tabela, exact=True).last
     secao.scroll_into_view_if_needed()
@@ -836,27 +857,33 @@ def download_bloco_metas_spreadsheet(final_page: Page, base_id: str, secao_tabel
     tile_button.click(force=True)
     final_page.wait_for_timeout(1000)
 
-    return _complete_download_dialog(final_page, base_id)
+    return _complete_download_dialog(final_page, base_id, download_timeout_ms=download_timeout_ms)
 
 
 def download_meta_financiamento_seguro_report(context: BrowserContext, page: Page, base: dict) -> Path:
     """
-    Fluxo completo compartilhado pelas bases 'meta_financiamento_seguro' e
-    'meta_financiamento_seguro_mes_anterior' (mesmo dashboard/relatório -
-    só muda o período aplicado no filtro "Safra Mês", via
-    `base["periodo_safra_mes"]`, ver `apply_safra_mes_filter`).
+    Fluxo completo da base 'meta_financiamento_seguro'. Busca o ANO
+    CORRENTE inteiro a cada execução (filtro "Safra Mês" -> "is in the
+    year", ver `apply_safra_mes_filter`), não só o mês atual - mesmo
+    padrão já usado por Dias sem Produção e Número de Contratos (Year To
+    Date). O acúmulo e a marcação de cor continuam cuidando de não
+    duplicar nem perder linha (ver
+    `data_processor._process_meta_financiamento_seguro`).
     """
     final_page = open_resumo_parceiro(context, page, base)
-    apply_safra_mes_filter(final_page, periodo=base.get("periodo_safra_mes", "mes_atual"))
+    apply_safra_mes_filter(final_page, periodo="ano", ano=date.today().year)
     update_report_data(final_page)
-    path = download_bloco_metas_spreadsheet(final_page, base["id"], base["secao_tabela"])
+    # timeout maior que o padrão (60s): buscar o ano inteiro demora mais que
+    # o mês atual - mesmo motivo do timeout maior de Comissão à Vista.
+    path = download_bloco_metas_spreadsheet(
+        final_page, base["id"], base["secao_tabela"], download_timeout_ms=240000,
+    )
     final_page.close()
     return path
 
 
 # --------------------------------------------------------------------------
-# Fluxo dedicado - base "carteira_parceiros" (Painel Carteira), validado
-# rodando de verdade contra o portal.
+# Fluxo dedicado - base "carteira_parceiros" (Painel Carteira)
 # --------------------------------------------------------------------------
 
 def open_painel_carteira(context: BrowserContext, page: Page, base: dict) -> Page:
@@ -879,8 +906,7 @@ def apply_referencia_year_filter(final_page: Page):
     então trocamos a segunda parte do seletor composto de "month" para
     "year" (mantendo o tipo "is this").
     """
-    final_page.get_by_text("filters", exact=False).first.click()
-    final_page.wait_for_timeout(1500)
+    _abrir_painel_filtros(final_page)
 
     final_page.get_by_text(re.compile(r"^is "), exact=False).first.click()
     final_page.wait_for_timeout(800)
@@ -897,14 +923,10 @@ def apply_referencia_year_filter(final_page: Page):
 
 def download_carteira_spreadsheet(final_page: Page, base_id: str) -> Path:
     """
-    Localiza o botão "Tile actions" da tabela usando o cabeçalho de coluna
-    "Cnpj Da Loja" como referência (esse relatório não tem uma faixa de
-    título separada acima da tabela, mesma situação de Dias sem Produção -
-    sem `titulo_tile`, mesmo motivo documentado em
-    `download_sla_analitico_spreadsheet`). O timeout de download é maior
-    (240s) porque baixa o ano inteiro - em teste real o Looker levou entre
-    120s e 180s para gerar o arquivo, então 120s (usado antes) não é
-    margem suficiente.
+    Localiza o botão "Tile actions" usando o cabeçalho de coluna "Cnpj Da
+    Loja" como referência (mesma situação de Dias sem Produção, sem
+    `titulo_tile` - ver `download_sla_analitico_spreadsheet`). Timeout de
+    download maior (240s) porque baixa o ano inteiro.
     """
     referencia = final_page.get_by_text("Cnpj Da Loja", exact=True).first
     referencia.scroll_into_view_if_needed(timeout=90000)
@@ -934,23 +956,15 @@ def download_carteira_parceiros_report(context: BrowserContext, page: Page, base
 # dentro do mesmo card "Apuração Parceiro 2.0" de Meta Financiamento e
 # Seguro, porém um link diferente dentro dele).
 #
-# Validado ao vivo em 17/08/2026 (screenshot real do dashboard) até o
-# filtro/download - dois ajustes feitos nessa validação, diferente do que
-# a especificação original descrevia:
-#   - O link do catálogo é "Apuração Comissão À Vista" (com "À" maiúsculo,
-#     não "à" minúsculo - `exact=True` é sensível a isso).
-#   - O filtro de período NÃO se chama "Referência" - é "Safra Mês", o
-#     MESMO widget de Meta Financiamento e Seguro (padrão salvo "is in the
-#     last 6 months"), por isso reaproveita `apply_safra_mes_filter` (em
-#     vez de só verificar como as outras bases fazem) - inclusive a
-#     exceção de janela curta na virada de mês, que faz sentido igual
-#     aqui (mesma família de relatório "Apuração Parceiro 2.0").
-#   - `secao_tabela` (config.py) é "Analítico" - mesmo padrão de Número de
-#     Contratos, não o nome do relatório como a especificação sugeria.
-# Fluxo completo (login -> filtro -> download -> tratamento) validado de
-# ponta a ponta ao vivo em 17/08/2026 - ver também a chave de comparação
-# já definida em `regras["chave_comparacao"]` (config.py) e o filtro da
-# linha de totais em `data_processor._process_comissao_a_vista`.
+#   - Link do catálogo: "Apuração Comissão À Vista" ("À" maiúsculo -
+#     `exact=True` é sensível a isso).
+#   - Filtro de período: "Safra Mês" (mesmo widget de Meta Financiamento e
+#     Seguro) - reaproveita `apply_safra_mes_filter`, inclusive a exceção
+#     de janela curta na virada de mês.
+#   - `secao_tabela` (config.py) é "Analítico", mesmo padrão de Número de
+#     Contratos.
+# Ver a chave de comparação em `regras["chave_comparacao"]` (config.py) e o
+# filtro da linha de totais em `data_processor._process_comissao_a_vista`.
 # --------------------------------------------------------------------------
 
 def open_apuracao_comissao_a_vista(context: BrowserContext, page: Page, base: dict) -> Page:
@@ -966,12 +980,18 @@ def open_apuracao_comissao_a_vista(context: BrowserContext, page: Page, base: di
     return _clicar_link_relatorio_e_abrir_popup(context, catalogo, base["link_relatorio"])
 
 
-def download_comissao_a_vista_spreadsheet(final_page: Page, base_id: str, secao_tabela: str) -> Path:
+def download_comissao_a_vista_spreadsheet(
+    final_page: Page, base_id: str, secao_tabela: str, download_timeout_ms: int = 60000,
+) -> Path:
     """
     Rola até a seção/tabela do relatório (referência configurada em
     `secao_tabela`, config.py) e completa o download - mesmo padrão de
     `download_bloco_metas_spreadsheet`, incluindo a dica de título para
     `_find_tile_actions_button`.
+
+    `download_timeout_ms` pode ser aumentado para downloads maiores (ex:
+    carga de ano fechado inteiro, ver `download_ano_fechado_report`) - o
+    Looker demora mais para gerar o arquivo antes do download começar.
     """
     secao = final_page.get_by_text(secao_tabela, exact=True).last
     secao.scroll_into_view_if_needed()
@@ -983,7 +1003,7 @@ def download_comissao_a_vista_spreadsheet(final_page: Page, base_id: str, secao_
     tile_button.click(force=True)
     final_page.wait_for_timeout(1000)
 
-    return _complete_download_dialog(final_page, base_id)
+    return _complete_download_dialog(final_page, base_id, download_timeout_ms=download_timeout_ms)
 
 
 def download_comissao_a_vista_report(context: BrowserContext, page: Page, base: dict) -> Path:
@@ -1015,7 +1035,7 @@ def _download_single_base(context: BrowserContext, page: Page, base: dict) -> Pa
         return download_numero_contratos_report(context, page, base)
     elif base["id"] == "dias_sem_producao":
         return download_dias_sem_producao_report(context, page, base)
-    elif base["id"] in ("meta_financiamento_seguro", "meta_financiamento_seguro_mes_anterior"):
+    elif base["id"] == "meta_financiamento_seguro":
         return download_meta_financiamento_seguro_report(context, page, base)
     elif base["id"] == "carteira_parceiros":
         return download_carteira_parceiros_report(context, page, base)
@@ -1025,46 +1045,85 @@ def _download_single_base(context: BrowserContext, page: Page, base: dict) -> Pa
         raise ValueError(f"Base '{base['id']}' não tem fluxo de download implementado")
 
 
+BASES_COM_ANO_FECHADO = ("meta_financiamento_seguro", "comissao_a_vista", "dias_sem_producao", "numero_contratos")
+
+
+def download_ano_fechado_report(context: BrowserContext, page: Page, base_id: str, ano: int) -> Path:
+    """
+    Baixa o relatório de um ano fechado específico (ex: 2025) para uma das
+    4 bases em `BASES_COM_ANO_FECHADO` - NÃO faz parte do fluxo diário/
+    mensal normal (`download_bases`/`_download_single_base`), só do script
+    de carga única de histórico. "Carteira e Parceiros" não precisa disso
+    (já baixa o ano inteiro via `apply_referencia_year_filter`).
+
+    Cada base usa seu próprio widget de período (ver
+    `apply_safra_mes_filter`, `apply_referencia_month_ano`,
+    `apply_analitico_filters_ano_fechado`), todos validados ao vivo contra
+    o portal em 25/08/2026 antes de existir aqui.
+    """
+    if base_id not in BASES_COM_ANO_FECHADO:
+        raise ValueError(f"Base '{base_id}' não suporta carga de ano fechado (ver BASES_COM_ANO_FECHADO)")
+
+    base = config.get_base_by_id(base_id)
+    base_id_arquivo = f"{base_id}_{ano}"
+
+    if base_id == "meta_financiamento_seguro":
+        final_page = open_resumo_parceiro(context, page, base)
+        apply_safra_mes_filter(final_page, periodo="ano", ano=ano)
+        update_report_data(final_page)
+        path = download_bloco_metas_spreadsheet(
+            final_page, base_id_arquivo, base["secao_tabela"], download_timeout_ms=240000,
+        )
+    elif base_id == "comissao_a_vista":
+        final_page = open_apuracao_comissao_a_vista(context, page, base)
+        apply_safra_mes_filter(final_page, periodo="ano", ano=ano)
+        update_report_data(final_page)
+        path = download_comissao_a_vista_spreadsheet(
+            final_page, base_id_arquivo, base["secao_tabela"], download_timeout_ms=240000,
+        )
+    elif base_id == "dias_sem_producao":
+        final_page = open_sla_analitico(context, page, base)
+        apply_referencia_month_ano(final_page, ano)
+        update_report_data(final_page)
+        path = download_sla_analitico_spreadsheet(final_page, base_id_arquivo, download_timeout_ms=240000)
+    elif base_id == "numero_contratos":
+        final_page = open_acompanhamento_veiculos_analitico(context, page)
+        apply_analitico_filters_ano_fechado(final_page, base["filtros"]["tipo_exibicao"], ano)
+        update_report_data(final_page)
+        path = download_analitico_spreadsheet(final_page, base_id_arquivo)
+
+    final_page.close()
+    return path
+
+
 MAX_TENTATIVAS_POR_BASE = 2  # toda base tenta pelo menos 2x antes de ser considerada falha/pulada (ver download_bases)
 
 
 def download_bases(bases: list[dict], headless: bool = True) -> dict[str, Path]:
     """
-    Executa o fluxo completo de download para uma ou mais bases fazendo
-    **um único login** no portal - não há motivo para sair da conta e
-    entrar de novo entre uma base e outra, já que cada fluxo de download
-    sempre parte da mesma página inicial (`page`, a aba do WebAutorizador
-    logada) para abrir seu próprio caminho de pop-ups no menu Relatórios.
+    Executa o fluxo completo de download para uma ou mais bases fazendo um
+    único login no portal - cada fluxo de download parte da mesma página
+    inicial (`page`, a aba do WebAutorizador logada) para abrir seu próprio
+    caminho de pop-ups no menu Relatórios.
 
     Retorna um dict {base_id: caminho_do_arquivo_baixado} só com as bases
     que baixaram com sucesso - falha em uma base é logada e não impede as
-    demais de serem tentadas na mesma sessão.
+    demais.
 
-    Toda base tenta de novo automaticamente em caso de falha técnica/de
-    navegação, até `MAX_TENTATIVAS_POR_BASE` vezes (reabrindo a navegação
-    do zero a cada tentativa), antes de ser considerada "pulada" e a
-    execução seguir para a próxima base. A base "dias_sem_producao" (SLA)
-    tem uma falha técnica intermitente já conhecida (timeout esperando a
-    tabela carregar - ver GUIA_TIME_DADOS.md seção 10), então esse retry é
-    especialmente relevante para ela, mas vale para as 5 bases igualmente.
-    Um download que funciona mas vem com a planilha vazia **não** é uma
-    falha (não entra nesse retry, e não deveria - "pular" nesse caso é o
-    comportamento correto) - isso é tratado à parte em `data_processor`,
-    que só loga um aviso e segue em frente, sem nada para adicionar.
+    Toda base tenta de novo em caso de falha técnica/de navegação, até
+    `MAX_TENTATIVAS_POR_BASE` vezes, antes de ser considerada "pulada". A
+    base "dias_sem_producao" (SLA) tem uma falha técnica intermitente
+    conhecida (ver GUIA_TIME_DADOS.md seção 10), mas o retry vale para
+    todas. Um download que funciona mas vem com a planilha vazia NÃO é uma
+    falha (tratado à parte em `data_processor`).
     """
     resultados: dict[str, Path] = {}
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=headless)
-        # viewport largo (não só a janela) - confirmado ao vivo em 24/08/2026
-        # que a barra de abas do dashboard "Acompanhamento Veículos"
-        # ("Digitação | Analítico | Produção | Analítico Aprov no dia | Funil
-        # por dia util | Seguros | Voltar p/ One Page") some do DOM (não é só
-        # cortada visualmente) no viewport padrão do Playwright (1280x720) -
-        # o layout do Looker parece colapsar/omitir os itens que não cabem
-        # em vez de rolar ou usar um menu "mais". Sem essas abas, o clique em
-        # "Analítico" (`apply_analitico_filters`) nunca encontra o elemento e
-        # a base "numero_contratos" falha logo no início. 1600x900 já foi
-        # suficiente para renderizar a barra inteira nesse teste.
+        # viewport largo (não só a janela): no padrão do Playwright (1280x720)
+        # a barra de abas do dashboard "Acompanhamento Veículos" some do DOM
+        # (o Looker colapsa itens que não cabem), e o clique em "Analítico"
+        # (`apply_analitico_filters`) nunca encontra o elemento.
         context = browser.new_context(accept_downloads=True, viewport={"width": 1600, "height": 900})
         page = context.new_page()
 
@@ -1108,10 +1167,8 @@ def download_bases(bases: list[dict], headless: bool = True) -> dict[str, Path]:
                                 base["nome"], tentativa, max_tentativas,
                             )
                             if base["id"] == "dias_sem_producao":
-                                # Falha conhecida (ver GUIA_TIME_DADOS.md secao 10) - reforçar
-                                # aqui para quem for ler o log não interpretar como "não há
-                                # dados para o período": é um problema técnico de navegação/
-                                # carregamento da página no portal, não ausência de informação.
+                                # Falha técnica conhecida de navegação/carregamento no
+                                # portal (ver GUIA_TIME_DADOS.md seção 10), não ausência de dados.
                                 logger.warning(
                                     "A base 'Dias sem Produção' (SLA) NÃO falhou por falta de "
                                     "dados - é um problema técnico já conhecido de navegação/"
@@ -1120,13 +1177,9 @@ def download_bases(bases: list[dict], headless: bool = True) -> dict[str, Path]:
                                     max_tentativas,
                                 )
                     finally:
-                        # Se a base falhou antes de chegar no `final_page.close()` do
-                        # seu próprio fluxo, a aba/pop-up daquele relatório fica aberta
-                        # e "suja" a sessão para a próxima tentativa/base (foi o que
-                        # causava a Carteira e Parceiros falhar logo depois do SLA
-                        # falhar, já que ela vem em seguida em config.BASES). Fecha
-                        # qualquer aba nova que ainda esteja aberta, com sucesso ou
-                        # falha, antes de tentar de novo ou seguir para a próxima base.
+                        # Se a base falhou antes do `final_page.close()` do seu próprio
+                        # fluxo, a aba/pop-up fica aberta e "suja" a sessão para a
+                        # próxima tentativa/base - fecha qualquer aba nova ainda aberta.
                         for pagina in context.pages:
                             if pagina not in paginas_antes and pagina is not page and not pagina.is_closed():
                                 try:

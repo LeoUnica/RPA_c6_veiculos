@@ -1,14 +1,9 @@
 """
 Tratamento de dados das bases baixadas do Looker.
 
-Cada uma das 5 bases (numero_contratos, dias_sem_producao,
-meta_financiamento_seguro, carteira_parceiros, comissao_a_vista) tem seu
-próprio fluxo de tratamento dedicado (`_process_*`), pois cada uma tem
-regras próprias de seleção de colunas, identificação do "período atual" e
-destino final - ver `process_base` para o dispatch entre elas.
-"meta_financiamento_seguro" tem dois `_process_*` (mês atual e mês
-anterior, ver `_process_meta_financiamento_seguro_mes_anterior`) porque é
-baixada duas vezes por execução, mas continua sendo 1 base só, não uma 6ª.
+Cada uma das 5 bases tem seu próprio fluxo de tratamento dedicado
+(`_process_*`), com regras próprias de seleção de colunas, "período atual"
+e destino final - ver `process_base` para o dispatch entre elas.
 """
 
 import logging
@@ -22,6 +17,7 @@ import numpy as np
 import pandas as pd
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import PatternFill
+from openpyxl.worksheet.filters import DateGroupItem, FilterColumn, Filters
 
 import config
 
@@ -36,9 +32,9 @@ VERMELHO_SEM_DADOS = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_
 HISTORICO_COLUNAS = ["Data/Hora", "Base", "Linhas baixadas", "Linhas novas", "Linhas totais (destino)", "Observação"]
 
 TENTATIVAS_ARQUIVO_BLOQUEADO = 12
-ESPERA_ARQUIVO_BLOQUEADO_SEGUNDOS = 10  # total ~2min de espera - confirmado ao vivo em 21/08/2026 que o
-                                         # OneDrive pode segurar um arquivo bloqueado por mais de 15s
-                                         # depois de gravações rápidas e sucessivas nele
+ESPERA_ARQUIVO_BLOQUEADO_SEGUNDOS = 10  # total ~2min de espera - o OneDrive pode
+                                         # segurar um arquivo bloqueado por mais de
+                                         # 15s após gravações rápidas e sucessivas
 
 
 def _com_retry_arquivo_bloqueado(
@@ -48,21 +44,14 @@ def _com_retry_arquivo_bloqueado(
     """
     Executa `acao()` - um `DataFrame.to_excel(...)`, `Workbook.save(...)`
     OU `pd.read_excel(...)` - com retry em caso de arquivo bloqueado,
-    situação comum em produção já que as planilhas ficam em pastas do
-    OneDrive: alguém pode estar com o arquivo aberto no Excel, ou o
-    próprio OneDrive pode estar no meio de uma sincronização quando a
-    execução tenta ler OU gravar. Sem isso, qualquer um dos dois cenários
-    derrubava a base inteira com um `PermissionError` (WinError 32) sem
-    chance de recuperação, mesmo sendo uma condição tipicamente
-    temporária (confirmado ao vivo em 21/08/2026: uma leitura de
-    `pd.read_excel` logo após o arquivo ser renomeado/reescrito pegou o
-    OneDrive ainda sincronizando).
+    comum em produção porque as planilhas ficam em pastas do OneDrive
+    (arquivo aberto no Excel, ou OneDrive sincronizando). Sem isso, um
+    `PermissionError` (WinError 32) derrubava a base inteira mesmo sendo
+    uma condição tipicamente temporária.
 
-    Tenta `tentativas` vezes com espera fixa entre elas; na última
-    tentativa, deixa o erro se propagar com uma mensagem clara sobre a
-    causa provável e qual arquivo fechar, em vez do `PermissionError` cru
-    do openpyxl/pandas. Retorna o que `acao()` retornar (útil para leitura;
-    `None` para as gravações, que ninguém usa o retorno mesmo).
+    Tenta `tentativas` vezes com espera fixa entre elas; na última, deixa o
+    erro se propagar com uma mensagem clara sobre a causa provável, em vez
+    do `PermissionError` cru do openpyxl/pandas.
     """
     for tentativa in range(1, tentativas + 1):
         try:
@@ -96,17 +85,12 @@ def registrar_historico(
 ):
     """
     Registra uma linha em `logs/historico_execucoes.xlsx` (separado do
-    `rpa.log`, feito pra abrir/filtrar direto no Excel) com a quantidade de
-    linhas baixadas do Looker nesta execução para uma base - permite
-    conferir rapidamente, ao longo do tempo, se cada execução trouxe dados
-    novos ou não, sem precisar vasculhar o log de texto.
+    `rpa.log`, pra abrir/filtrar direto no Excel) com a quantidade de
+    linhas baixadas do Looker nesta execução para uma base.
 
     `linhas_baixadas=0` (ou `None`, quando nem chegou a baixar - ver
-    `main.run_bases`) pinta a linha de vermelho, pra pular aos olhos ao
-    abrir a planilha. Chamada uma vez por base a cada execução, pelo fluxo
-    de sucesso (final de cada `_process_*`) e pelo caminho de falha no
-    download (`main.run_bases`, quando a base é pulada sem nem gerar
-    arquivo).
+    `main.run_bases`) pinta a linha de vermelho. Chamada uma vez por base a
+    cada execução, tanto no fluxo de sucesso quanto na falha de download.
     """
     path = _historico_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -143,13 +127,10 @@ def _chave_como_serie(df: pd.DataFrame, chave) -> pd.Series:
     (como tupla) se `chave` for None.
 
     Dois ajustes evitam falsos positivos ao comparar com a execução anterior:
-    - Colunas numéricas são arredondadas (6 casas decimais) - o Excel perde
-      um pouco de precisão de ponto flutuante ao salvar/reabrir um valor
-      (ex: 61653.33333333334 vira 61653.333333333336), o que faria uma linha
-      sem nenhuma mudança real parecer "editada".
-    - Células vazias (NaN) são trocadas por um marcador fixo, já que
-      `NaN != NaN` em Python faria uma linha inalterada (mas com alguma
-      célula vazia) ser sempre considerada "diferente" por engano.
+    colunas numéricas são arredondadas (6 casas decimais, para absorver a
+    perda de precisão do Excel ao salvar/reabrir) e células vazias (NaN) são
+    trocadas por um marcador fixo (já que `NaN != NaN` sempre marcaria a
+    linha como "diferente").
     """
     if chave is None:
         colunas = df
@@ -209,21 +190,16 @@ def _acumular_planilha(
     caminho: Path, df_novo: pd.DataFrame, chave,
 ) -> tuple[pd.DataFrame, pd.DataFrame | None]:
     """
-    Lê a planilha salva na execução anterior (Prévia ou "Base Price" -
-    ver `_acumular_e_colorir_origem`) e mescla com os dados novos desta
-    execução (`df_novo`), em vez de substituir o arquivo por inteiro -
-    garante que uma linha já vista **nunca** desapareça, mesmo se o Looker
-    deixar de trazê-la numa execução seguinte (ex: instabilidade do
-    relatório, virada de mês/ano) ou se o período já tiver "fechado" - só
-    acumula, nunca descarta uma linha por período. Sempre mantém a versão
-    mais recente de cada chave (`drop_duplicates(..., keep="last")`),
-    então uma linha existente é atualizada se algum dado dela mudar.
+    Lê a planilha salva na execução anterior e mescla com os dados novos
+    (`df_novo`), em vez de substituir o arquivo por inteiro - garante que
+    uma linha já vista nunca desapareça, mesmo se o Looker deixar de
+    trazê-la numa execução seguinte. Sempre mantém a versão mais recente de
+    cada chave (`drop_duplicates(..., keep="last")`), então uma linha
+    existente é atualizada se algum dado dela mudar.
 
-    Se `df_novo` vier vazio (sem dados no período), a planilha anterior é
-    devolvida sem nenhuma alteração - evita apagar todo o histórico por
-    causa de uma execução sem dados no período.
+    Se `df_novo` vier vazio, a planilha anterior é devolvida sem alteração.
 
-    Retorna (df a gravar, versão anterior - usada em seguida por
+    Retorna (df a gravar, versão anterior - usada por
     `_marcar_linhas_novas_e_editadas` para a marcação de cor).
     """
     df_anterior = _com_retry_arquivo_bloqueado(caminho, lambda: pd.read_excel(caminho)) if caminho.exists() else None
@@ -242,24 +218,28 @@ def _acumular_planilha(
 
 def _acumular_e_colorir_origem(
     origem_path: Path, df_previa: pd.DataFrame, chave, aplicar_autofiltro: bool,
+    *, ordenar: Callable[[pd.DataFrame], pd.DataFrame] | None = None,
 ) -> tuple[pd.DataFrame, int]:
     """
-    Mescla `df_previa` (a Prévia já acumulada) na planilha de origem
-    oficial ("Base Price") em `origem_path`, usando o mesmo acúmulo
-    "nunca descarta uma linha" da Prévia (`_acumular_planilha`) e a mesma
-    marcação de cor (`_marcar_linhas_novas_e_editadas`): 🟩 verde para
-    chave nova (acrescentada depois da última linha já preenchida), 🟨
-    amarelo para chave já existente com algum dado alterado (atualizada
-    onde já estava, nunca duplicada). Usada pelas bases "Dias sem
-    Produção", "Meta Financiamento e Seguro" e "Carteira e Parceiros"
-    (Número de Contratos e Comissão à Vista têm suas próprias regras de
-    origem oficial - ver `_process_numero_contratos`/
-    `_acumular_origem_comissao_a_vista`).
+    Mescla `df_previa` na planilha de origem oficial em `origem_path`,
+    usando o mesmo acúmulo "nunca descarta uma linha" (`_acumular_planilha`)
+    e a mesma marcação de cor (`_marcar_linhas_novas_e_editadas`): verde
+    para chave nova, amarelo para chave existente com dado alterado. Usada
+    pelas bases "Dias sem Produção", "Meta Financiamento e Seguro" e
+    "Número de Contratos" (Comissão à Vista tem regra própria de origem
+    oficial - ver `_acumular_origem_comissao_a_vista`).
 
-    Retorna (DataFrame final gravado em `origem_path`, quantidade de
-    chaves genuinamente novas nesta execução - usada no histórico).
+    `ordenar`, se informado, reordena o resultado final (ex: por data
+    crescente) antes de salvar e colorir - a marcação de cor compara por
+    chave, não por posição, então a ordenação não afeta a detecção de
+    linha nova/editada.
+
+    Retorna (DataFrame final gravado, quantidade de chaves novas nesta
+    execução - usada no histórico).
     """
     df_final, df_anterior = _acumular_planilha(origem_path, df_previa, chave)
+    if ordenar is not None:
+        df_final = ordenar(df_final)
     _com_retry_arquivo_bloqueado(origem_path, lambda: df_final.to_excel(origem_path, index=False, sheet_name="sheet1"))
     if aplicar_autofiltro:
         _apply_excel_autofilter(origem_path)
@@ -267,10 +247,32 @@ def _acumular_e_colorir_origem(
     return df_final, _contar_chaves_novas(df_final, df_anterior, chave)
 
 
+def _ordenar_por_data(df: pd.DataFrame) -> pd.DataFrame:
+    """Ordena por `DATE_COLUMN_NUMERO_CONTRATOS` ("Dt Relatório") ascendente
+    e de forma estável - usada como `ordenar` em `_acumular_e_colorir_origem`
+    para a base "numero_contratos" (data real, dia/mês/ano, diferente do
+    formato AAAAMM de `_ordenar_por_coluna`)."""
+    if DATE_COLUMN_NUMERO_CONTRATOS not in df.columns or df.empty:
+        return df
+    return df.sort_values(by=DATE_COLUMN_NUMERO_CONTRATOS, ascending=True, kind="stable").reset_index(drop=True)
+
+
+def _ordenar_por_coluna(coluna: str) -> Callable[[pd.DataFrame], pd.DataFrame]:
+    """Fábrica de função `ordenar` para `_acumular_e_colorir_origem`: ordena
+    ascendente e de forma estável pela coluna informada (ex: "Anomes
+    Apuracao", "Safra Mes" - ambas no formato AAAAMM, que já ordena
+    cronologicamente como número/texto puro, sem precisar de parsing de data)."""
+    def _ordenar(df: pd.DataFrame) -> pd.DataFrame:
+        if coluna not in df.columns or df.empty:
+            return df
+        return df.sort_values(by=coluna, ascending=True, kind="stable").reset_index(drop=True)
+    return _ordenar
+
+
 def _contar_chaves_novas(df_final: pd.DataFrame, df_anterior: pd.DataFrame | None, chave) -> int:
     """Quantas chaves de `df_final` não existiam em `df_anterior` - usado só
-    para o número reportado no histórico (`registrar_historico`), a
-    marcação de cor em si é feita à parte por `_marcar_linhas_novas_e_editadas`."""
+    para o número reportado no histórico (a marcação de cor é feita à parte
+    por `_marcar_linhas_novas_e_editadas`)."""
     if df_anterior is not None and not df_anterior.empty:
         chaves_anteriores = set(_chave_como_serie(df_anterior, chave))
         chaves_atuais = set(_chave_como_serie(df_final, chave))
@@ -303,6 +305,13 @@ def _current_month_mask_com_virada(df: pd.DataFrame, date_col: str, dias_extra: 
     return mask
 
 
+def _eh_ano_corrente(ano: int) -> bool:
+    """Um ano fechado (ex: 2025) nunca deve ser escrito de novo pela
+    automação - só o ano corrente (`date.today().year`) recebe novas linhas.
+    Usado ao rotear Comissão à Vista e Dias sem Produção por ano."""
+    return ano == date.today().year
+
+
 def _select_columns(df_novo: pd.DataFrame, base: dict) -> pd.DataFrame:
     """Mantém somente as colunas listadas em `colunas_manter` (config.py) - as demais são excluídas."""
     colunas_manter = base["regras"]["colunas_manter"]
@@ -330,6 +339,101 @@ def _apply_excel_autofilter(path: Path):
     _com_retry_arquivo_bloqueado(path, lambda: wb.save(path))
 
 
+def _mes_atual_e_anterior() -> tuple[tuple[int, int], tuple[int, int]]:
+    """(ano, mês) do mês corrente e do mês civil anterior - ex: hoje em
+    agosto/2026 retorna ((2026, 8), (2026, 7))."""
+    hoje = date.today()
+    if hoje.month == 1:
+        anterior = (hoje.year - 1, 12)
+    else:
+        anterior = (hoje.year, hoje.month - 1)
+    return (hoje.year, hoje.month), anterior
+
+
+def _filtrar_mes_atual_e_anterior(
+    path: Path, coluna: str, *, is_date: bool = False, coluna_totais: str | None = None,
+):
+    """
+    Aplica no Excel um AutoFilter JÁ ATIVADO na coluna `coluna`, mostrando
+    somente o mês corrente e o mês civil anterior (ex: hoje em agosto/2026
+    -> mostra julho e agosto) - linhas de outros meses ficam ocultas (não
+    apagadas, `Worksheet.row_dimensions[...].hidden`), e a lista de
+    valores do filtro fica marcada só com os meses visíveis, para o Excel
+    já abrir com o filtro aplicado (não só os botões de filtro disponíveis).
+
+    Reaplicado do zero a cada execução - a cada linha, decide de novo se
+    fica visível ou oculta, então a janela "rola" sozinha conforme o mês
+    corrente muda (não precisa de nenhuma limpeza manual antes de rodar de
+    novo). Usada nas 5 planilhas de origem oficial do ano corrente
+    (CARTEIRA, DIAS SEM PRODUCAO, Meta Financiamento Seguro, Comissão à
+    Vista, Digitação Analítico) - nunca nas planilhas de ano fechado
+    (2025) nem na "Trimestre"/Prévias.
+
+    `is_date=True` quando `coluna` é uma data real (dia/mês/ano, ex: "Dt
+    Relatório") em vez do formato AAAAMM (Anomes Apuracao/Safra Mes/Anomes)
+    - usa um filtro de data agrupado por mês em vez de lista de valores.
+
+    `coluna_totais`, se informado, é o nome de uma coluna cuja célula
+    vazia identifica a linha de totais (Comissão à Vista) - essa linha
+    nunca é ocultada, independente do mês.
+    """
+    (ano_atual, mes_atual), (ano_anterior, mes_anterior) = _mes_atual_e_anterior()
+
+    wb = load_workbook(path)
+    ws = wb.active
+    ws.title = ws.title.lower()
+
+    cabecalho = [cell.value for cell in ws[1]]
+    if coluna not in cabecalho:
+        logger.warning("Coluna '%s' não encontrada em '%s' - filtro de mês não aplicado.", coluna, path)
+        return
+    col_idx0 = cabecalho.index(coluna)
+    col_idx1 = col_idx0 + 1
+    idx_totais1 = cabecalho.index(coluna_totais) + 1 if coluna_totais and coluna_totais in cabecalho else None
+
+    valores_visiveis = set()
+    for row in range(2, ws.max_row + 1):
+        if idx_totais1 is not None and ws.cell(row=row, column=idx_totais1).value is None:
+            ws.row_dimensions[row].hidden = False  # linha de totais: sempre visível
+            continue
+
+        valor = ws.cell(row=row, column=col_idx1).value
+        if valor is None:
+            ws.row_dimensions[row].hidden = True
+            continue
+
+        if is_date:
+            dt = valor if isinstance(valor, (datetime, date)) else pd.to_datetime(valor, dayfirst=True, errors="coerce")
+            if pd.isna(dt):
+                ws.row_dimensions[row].hidden = True
+                continue
+            visivel = (dt.year, dt.month) in ((ano_atual, mes_atual), (ano_anterior, mes_anterior))
+        else:
+            anomes = int(str(int(valor))[:6])
+            ano_v, mes_v = anomes // 100, anomes % 100
+            visivel = (ano_v, mes_v) in ((ano_atual, mes_atual), (ano_anterior, mes_anterior))
+            if visivel:
+                valores_visiveis.add(str(valor))
+
+        ws.row_dimensions[row].hidden = not visivel
+
+    ws.auto_filter.ref = ws.dimensions
+    ws.auto_filter.filterColumn = []  # remove filtro de execuções anteriores antes de aplicar o atual
+    if is_date:
+        ws.auto_filter.filterColumn.append(FilterColumn(colId=col_idx0, filters=Filters(dateGroupItem=[
+            DateGroupItem(year=ano_atual, month=mes_atual, dateTimeGrouping="month"),
+            DateGroupItem(year=ano_anterior, month=mes_anterior, dateTimeGrouping="month"),
+        ])))
+    else:
+        ws.auto_filter.add_filter_column(col_idx0, sorted(valores_visiveis), blank=False)
+
+    _com_retry_arquivo_bloqueado(path, lambda: wb.save(path))
+    logger.info(
+        "Filtro de mês (%02d/%d e %02d/%d) aplicado em '%s'.",
+        mes_anterior, ano_anterior, mes_atual, ano_atual, path,
+    )
+
+
 CHAVE_UNICA_NUMERO_CONTRATOS = "ID Proposta"
 DIAS_JANELA_TRIMESTRE_NUMERO_CONTRATOS = 90  # janela móvel da planilha "Trimestre" - ver _process_numero_contratos
 
@@ -340,48 +444,28 @@ def _process_numero_contratos(downloaded_path: Path, base: dict) -> Path:
       1. Filtra Status Proposta = PROPOSTA PAGA e seleciona as colunas certas.
       2. Acumula o download inteiro (últimos 90 dias, filtro do próprio
          relatório) na planilha "Trimestre" (Digitação Analítico - {ano} -
-         Trimestre.xlsx, mesmo ano) - contrato novo é acrescentado depois
-         da última linha já preenchida (🟩 verde) e contrato existente é
-         atualizado onde já estava se algum dado mudou (🟨 amarelo).
-         Diferente das outras planilhas de origem oficial do projeto, esta
-         NÃO acumula para sempre: a cada execução, qualquer contrato com
-         data mais antiga que `DIAS_JANELA_TRIMESTRE_NUMERO_CONTRATOS` (90
-         dias) é removido - é uma janela móvel de ~1 trimestre, não um
-         histórico permanente (pedido do time em 21/08/2026). CORRIGIDO em
-         24/08/2026: antes o download inteiro era recortado só para o mês
-         atual (`_apenas_mes_atual`) ANTES de entrar aqui, então a janela
-         de 90 dias nunca via de fato os outros meses que o relatório traz
-         - agora essa planilha recebe o download completo (90 dias), sem
-         recorte de mês.
-      3. Mescla também o download inteiro numa segunda planilha, "Digitação
-         Analítico - {ano}_Anual" (mesma pasta da planilha do passo 2),
-         usando `_acumular_e_colorir_origem` - mesma regra de cor do
-         passo 2, mas SEM a janela de 90 dias e SEM reordenar por data:
-         contrato novo é sempre acrescentado logo depois da última linha
-         já preenchida, na ordem em que foi sendo processado ao longo do
-         ano, funcionando como o único acumulado histórico permanente
-         (nunca remove uma linha) - é esta planilha, não a do passo 2, que
-         guarda o ano completo.
-      4. Só a planilha "Prévia" continua restrita ao mês/ano de referência
-         (mês civil atual) - descarta qualquer linha que não seja do mês
-         atual, já que o pedido original para ela era refletir só o mês
-         corrente, não a janela de 90 dias do relatório. Exceção: no
-         primeiro dia do mês (virada), também mantém os últimos 3 dias do
-         mês anterior, para não perder contratos de fim de mês que só
-         aparecem como "PROPOSTA PAGA" com um pequeno atraso. Deduplicação
-         por "ID Proposta", mantendo sempre a versão mais recente baixada.
+         Trimestre.xlsx). Diferente das outras planilhas de origem oficial
+         do projeto, esta NÃO acumula para sempre: a cada execução, contrato
+         mais antigo que `DIAS_JANELA_TRIMESTRE_NUMERO_CONTRATOS` (90 dias) é
+         removido - é uma janela móvel, não histórico permanente.
+      3. Mescla o download inteiro também na planilha anual "Digitação
+         Analítico - {ano}" (mesma pasta), via `_acumular_e_colorir_origem` -
+         mesma regra de cor, mas SEM a janela de 90 dias: é o acumulado
+         histórico permanente do ano (nunca remove uma linha), sempre
+         reordenado por data crescente após o merge. Só é escrita para o
+         ano corrente - um ano fechado (ex: 2025) nunca é tocado de novo,
+         já que `ano` aqui é sempre `date.today().year`.
+      4. A planilha "Prévia" continua restrita ao mês/ano de referência
+         (mês civil atual). Exceção: no primeiro dia do mês, também mantém
+         os últimos 3 dias do mês anterior, para não perder contratos de
+         fim de mês que aparecem como "PROPOSTA PAGA" com atraso.
+         Deduplicação por "ID Proposta", mantendo a versão mais recente.
 
-    Na planilha do passo 2, o resultado final fica ordenado por data
-    crescente (do menor para o maior dia de cada mês, mês a mês) - não só
-    o bloco novo, a tabela inteira é reordenada por data a cada execução.
+    Na planilha do passo 2, o resultado final fica sempre reordenado por
+    data crescente a cada execução (não só o bloco novo).
     """
     chave = CHAVE_UNICA_NUMERO_CONTRATOS
     date_col = DATE_COLUMN_NUMERO_CONTRATOS
-
-    def _ordenar_por_data(df: pd.DataFrame) -> pd.DataFrame:
-        if date_col in df.columns:
-            return df.sort_values(by=date_col, ascending=True, kind="stable").reset_index(drop=True)
-        return df
 
     def _apenas_mes_atual(df: pd.DataFrame) -> pd.DataFrame:
         if date_col in df.columns and not df.empty:
@@ -398,9 +482,9 @@ def _process_numero_contratos(downloaded_path: Path, base: dict) -> Path:
     df_tratado = pd.read_excel(downloaded_path)
     linhas_baixadas = len(df_tratado)
     df_tratado = _apply_row_filters(df_tratado, base)
-    df_tratado = _select_columns(df_tratado, base)  # NÃO recorta por mês - mantém os 90 dias inteiros do download
+    df_tratado = _select_columns(df_tratado, base)  # NÃO recorta por mês - mantém os 90 dias do download
 
-    # --- 1. Mescla o download inteiro (90 dias) na planilha "Trimestre" (janela móvel) ---
+    # --- 1. Mescla o download inteiro na planilha "Trimestre" (janela móvel) ---
     ano = date.today().year
     origem_path = config.caminho_planilha_origem_numero_contratos(ano)
     origem_path.parent.mkdir(parents=True, exist_ok=True)
@@ -420,15 +504,16 @@ def _process_numero_contratos(downloaded_path: Path, base: dict) -> Path:
         origem_path, linhas_novas, len(df_final), DIAS_JANELA_TRIMESTRE_NUMERO_CONTRATOS,
     )
 
-    # --- 2. Mescla o download inteiro na planilha "_Anual" (mesmo ano, sem reordenar por data) ---
+    # --- 2. Mescla o download inteiro na planilha anual, reordenada por data crescente ---
     origem_anual_path = config.caminho_planilha_origem_numero_contratos_anual(ano)
     df_final_anual, linhas_novas_anual = _acumular_e_colorir_origem(
-        origem_anual_path, df_tratado, chave, autofiltro,
+        origem_anual_path, df_tratado, chave, autofiltro, ordenar=_ordenar_por_data,
     )
     logger.info(
-        "Planilha '_Anual' atualizada: %s (+%d contratos novos, %d no total)",
+        "Planilha anual atualizada: %s (+%d contratos novos, %d no total)",
         origem_anual_path, linhas_novas_anual, len(df_final_anual),
     )
+    _filtrar_mes_atual_e_anterior(origem_anual_path, date_col, is_date=True)
 
     # --- 3. Acumula na "Prévia" (só o mês/ano de referência), sem duplicar por ID Proposta ---
     df_tratado_mes_atual = _apenas_mes_atual(df_tratado)
@@ -461,17 +546,15 @@ def _process_dias_sem_producao(downloaded_path: Path, base: dict) -> Path:
     """
     Fluxo específico da base "Dias sem Produção":
       1. Seleciona as colunas certas (essa base não tem filtro de status).
-      2. Acumula o resultado tratado na pasta "Prévia", mesclando com a
-         Prévia da execução anterior sem duplicar por `Cd Loja` + `Safra
-         Mes` (ver `_acumular_planilha`) - uma linha vista numa execução
-         anterior NUNCA é descartada da Prévia, mesmo que o Looker não
-         traga ela de novo numa execução seguinte. Chave nova = 🟩 verde,
-         chave existente com dado alterado = 🟨 amarelo.
-      3. Mescla essa mesma Prévia na planilha de origem oficial ("Base
-         Price") - a chave nova é acrescentada depois da última linha já
-         preenchida (🟩 verde) e a chave existente é atualizada onde já
-         estava se algum dado mudou (🟨 amarelo); nunca remove uma linha
-         (ver `_acumular_e_colorir_origem`).
+      2. Acumula o resultado tratado na "Prévia", mesclando sem duplicar
+         por `Cd Loja` + `Safra Mes` (ver `_acumular_planilha`) - uma linha
+         nunca é descartada, mesmo que o Looker não a traga numa execução
+         seguinte.
+      3. Mescla essa Prévia em cada planilha de origem oficial por ano
+         (nunca remove uma linha - ver `_acumular_e_colorir_origem`),
+         roteada a partir do ano em "Safra Mes" - mesmo padrão de
+         `_process_meta_financiamento_seguro`. Um ano fechado (ex: 2025)
+         nunca é escrito de novo, só o ano corrente (`_eh_ano_corrente`).
     """
     chave = CHAVE_UNICA_DIAS_SEM_PRODUCAO
 
@@ -489,18 +572,50 @@ def _process_dias_sem_producao(downloaded_path: Path, base: dict) -> Path:
     _marcar_linhas_novas_e_editadas(previa_path, df_previa, chave, df_previa_anterior)
     logger.info("Base '%s' tratada (prévia): %s (%d linhas)", base["nome"], previa_path, len(df_previa))
 
-    origem_path = config.caminho_planilha_origem_dias_sem_producao()
-    origem_path.parent.mkdir(parents=True, exist_ok=True)
-    autofiltro = bool(base["regras"].get("aplicar_autofiltro_excel"))
-    df_final, linhas_novas = _acumular_e_colorir_origem(origem_path, df_previa, chave, autofiltro)
+    if df_previa.empty:
+        logger.warning(
+            "Relatório '%s' baixado veio vazio e a Prévia também está vazia - "
+            "nada para atualizar na planilha de origem oficial.",
+            base["nome"],
+        )
+        registrar_historico(base["nome"], linhas_baixadas, 0, None, "Sem dados no período")
+        return previa_path
 
-    logger.info(
-        "Planilha de origem atualizada: %s (+%d linhas novas, %d no total)",
-        origem_path, linhas_novas, len(df_final),
-    )
+    autofiltro = bool(base["regras"].get("aplicar_autofiltro_excel"))
+    anos_presentes = sorted(df_previa["Safra Mes"].astype(str).str[:4].unique())
+    origem_paths = []
+    linhas_total_todos_anos = 0
+    linhas_novas_todos_anos = 0
+
+    for ano_str in anos_presentes:
+        ano = int(ano_str)
+        if not _eh_ano_corrente(ano):
+            logger.info(
+                "Base '%s': ano %d é histórico fechado - não escrevendo de novo na planilha de origem.",
+                base["nome"], ano,
+            )
+            continue
+
+        df_ano_previa = df_previa[df_previa["Safra Mes"].astype(str).str[:4] == ano_str]
+
+        origem_path = config.caminho_planilha_origem_dias_sem_producao(ano)
+        origem_path.parent.mkdir(parents=True, exist_ok=True)
+        df_final, linhas_novas = _acumular_e_colorir_origem(
+            origem_path, df_ano_previa, chave, autofiltro, ordenar=_ordenar_por_coluna("Safra Mes"),
+        )
+
+        logger.info(
+            "Planilha de origem atualizada: %s (+%d linhas novas, %d no total)",
+            origem_path, linhas_novas, len(df_final),
+        )
+        _filtrar_mes_atual_e_anterior(origem_path, "Safra Mes")
+        origem_paths.append(origem_path)
+        linhas_total_todos_anos += len(df_final)
+        linhas_novas_todos_anos += linhas_novas
+
     observacao = "Sem dados no período" if linhas_baixadas == 0 else ""
-    registrar_historico(base["nome"], linhas_baixadas, linhas_novas, len(df_final), observacao)
-    return origem_path
+    registrar_historico(base["nome"], linhas_baixadas, linhas_novas_todos_anos, linhas_total_todos_anos, observacao)
+    return origem_paths[-1] if origem_paths else previa_path
 
 
 CHAVE_UNICA_META_FINANCIAMENTO_SEGURO = ["Anomes Apuracao", "Filial"]
@@ -508,28 +623,26 @@ CHAVE_UNICA_META_FINANCIAMENTO_SEGURO = ["Anomes Apuracao", "Filial"]
 
 def _process_meta_financiamento_seguro(downloaded_path: Path, base: dict) -> Path:
     """
-    Fluxo específico da base "Meta Financiamento e Seguro":
+    Fluxo específico da base "Meta Financiamento e Seguro". O download já
+    vem com o ANO CORRENTE inteiro (filtro "Safra Mês" -> "is in the year",
+    ver `looker_automation.download_meta_financiamento_seguro_report`), não
+    só o mês atual - isso garante que qualquer dado adicionado ou editado
+    em meses anteriores do próprio ano corrente também seja capturado.
+
       1. Seleciona as colunas certas (essa base não tem filtro de status).
-      2. Acumula o resultado tratado na pasta "Prévia", mesclando com a
-         Prévia da execução anterior sem duplicar por `Anomes Apuracao` +
-         `Filial` (ver `_acumular_planilha`) - uma linha vista numa
-         execução anterior NUNCA é descartada da Prévia, mesmo que o
-         Looker não traga ela de novo numa execução seguinte. Chave nova =
-         🟩 verde, chave existente com dado alterado = 🟨 amarelo.
-      3. Mescla essa mesma Prévia em cada planilha de origem oficial
-         ("Base Price", uma por ano) - a chave nova é acrescentada depois
-         da última linha já preenchida (🟩 verde) e a chave existente é
-         atualizada onde já estava se algum dado mudou (🟨 amarelo); nunca
-         remove uma linha (ver `_acumular_e_colorir_origem`). Roteado por
-         ano a partir de TODOS os anos presentes na Prévia acumulada (não
-         só no download desta execução), pra garantir que uma linha antiga
-         preservada na Prévia também acabe entrando na planilha de origem
-         correta.
+      2. Acumula o resultado tratado na "Prévia", mesclando sem duplicar por
+         `Anomes Apuracao` + `Filial` (ver `_acumular_planilha`) - uma
+         linha nunca é descartada, mesmo que o Looker não a traga numa
+         execução seguinte.
+      3. Mescla essa Prévia em cada planilha de origem oficial (uma por
+         ano, nunca remove uma linha, sempre reordenada por "Anomes
+         Apuracao" crescente - ver `_acumular_e_colorir_origem`). Roteado
+         por ano a partir de TODOS os anos presentes na Prévia acumulada,
+         mas só o ano corrente é de fato escrito - um ano fechado (ex:
+         2025) nunca é tocado de novo (ver `_eh_ano_corrente`).
 
     Cada ano tem seu próprio arquivo de origem (não subpasta, como em
-    Número de Contratos): "Meta Financiamento Seguro - {ano}.xlsx". Se a
-    Prévia acumulada abranger mais de um ano, cada ano é roteado para o
-    arquivo correto.
+    Número de Contratos): "Meta Financiamento Seguro - {ano}.xlsx".
     """
     chave = CHAVE_UNICA_META_FINANCIAMENTO_SEGURO
 
@@ -548,11 +661,8 @@ def _process_meta_financiamento_seguro(downloaded_path: Path, base: dict) -> Pat
     logger.info("Base '%s' tratada (prévia): %s (%d linhas)", base["nome"], previa_path, len(df_previa))
 
     if df_previa.empty:
-        # Sem "Anomes Apuracao" nenhum na Prévia (nem desta execução, nem
-        # acumulado antes) - não dá pra saber qual planilha de origem
-        # tocar. Não é um erro - loga e segue em frente sem mexer na
-        # origem oficial, em vez de tentar `origem_paths[-1]` numa lista
-        # vazia (o que travaria a execução).
+        # Sem "Anomes Apuracao" na Prévia - não dá pra saber qual planilha de
+        # origem tocar. Não é erro - loga e segue sem mexer na origem oficial.
         logger.warning(
             "Relatório '%s' baixado veio vazio e a Prévia também está vazia - "
             "nada para atualizar na planilha de origem oficial.",
@@ -569,60 +679,33 @@ def _process_meta_financiamento_seguro(downloaded_path: Path, base: dict) -> Pat
 
     for ano_str in anos_presentes:
         ano = int(ano_str)
+        if not _eh_ano_corrente(ano):
+            logger.info(
+                "Base '%s': ano %d é histórico fechado - não escrevendo de novo na planilha de origem.",
+                base["nome"], ano,
+            )
+            continue
+
         df_ano_previa = df_previa[df_previa["Anomes Apuracao"].astype(str).str[:4] == ano_str]
 
         origem_path = config.caminho_planilha_origem_meta_financiamento_seguro(ano)
         origem_path.parent.mkdir(parents=True, exist_ok=True)
-        df_final, linhas_novas = _acumular_e_colorir_origem(origem_path, df_ano_previa, chave, autofiltro)
+        df_final, linhas_novas = _acumular_e_colorir_origem(
+            origem_path, df_ano_previa, chave, autofiltro, ordenar=_ordenar_por_coluna("Anomes Apuracao"),
+        )
 
         logger.info(
             "Planilha de origem atualizada: %s (+%d linhas novas, %d no total)",
             origem_path, linhas_novas, len(df_final),
         )
+        _filtrar_mes_atual_e_anterior(origem_path, "Anomes Apuracao")
         origem_paths.append(origem_path)
         linhas_total_todos_anos += len(df_final)
         linhas_novas_todos_anos += linhas_novas
 
     observacao = "Sem dados no período" if linhas_baixadas == 0 else ""
     registrar_historico(base["nome"], linhas_baixadas, linhas_novas_todos_anos, linhas_total_todos_anos, observacao)
-    return origem_paths[-1]
-
-
-def _process_meta_financiamento_seguro_mes_anterior(downloaded_path: Path, base: dict) -> Path:
-    """
-    Fluxo da base "meta_financiamento_seguro_mes_anterior": mesmo
-    relatório/colunas de "Meta Financiamento e Seguro"
-    (`_process_meta_financiamento_seguro`), baixado com "Safra Mês" fixo
-    no mês civil anterior (ver
-    `looker_automation._selecionar_intervalo_mes_anterior`).
-
-    Diferente da base do mês atual, aqui não há Prévia nem roteamento por
-    ano - acumula direto num único arquivo fixo
-    ("Meta Financiamento e Seguro - Mês Anterior.xlsx", mesma pasta da
-    planilha de origem oficial) usando o mesmo acúmulo "nunca descarta uma
-    linha" + marcação de cor de `_acumular_e_colorir_origem`: o nome do
-    arquivo já deixa claro que é sempre "o mês anterior" em relação à
-    execução, então não faz sentido separar por ano - cada execução
-    mensal só acrescenta/atualiza as linhas daquele mês.
-    """
-    chave = CHAVE_UNICA_META_FINANCIAMENTO_SEGURO
-
-    df_tratado = pd.read_excel(downloaded_path)
-    linhas_baixadas = len(df_tratado)
-    df_tratado = _select_columns(df_tratado, base)
-
-    origem_path = config.caminho_planilha_origem_meta_financiamento_seguro_mes_anterior()
-    origem_path.parent.mkdir(parents=True, exist_ok=True)
-    autofiltro = bool(base["regras"].get("aplicar_autofiltro_excel"))
-    df_final, linhas_novas = _acumular_e_colorir_origem(origem_path, df_tratado, chave, autofiltro)
-
-    logger.info(
-        "Planilha de origem atualizada: %s (+%d linhas novas, %d no total)",
-        origem_path, linhas_novas, len(df_final),
-    )
-    observacao = "Sem dados no período" if linhas_baixadas == 0 else ""
-    registrar_historico(base["nome"], linhas_baixadas, linhas_novas, len(df_final), observacao)
-    return origem_path
+    return origem_paths[-1] if origem_paths else previa_path
 
 
 CHAVE_UNICA_CARTEIRA_PARCEIROS = ["Cnpj Da Loja", "Filial", "Anomes"]
@@ -634,28 +717,18 @@ def _process_carteira_parceiros(downloaded_path: Path, base: dict) -> Path:
       1. Não há filtro de colunas nem de status - o arquivo baixado é usado
          como está (todas as colunas).
       2. Acumula o resultado na "Prévia", mas só o mês atual (mesmo padrão
-         de "Número de Contratos" - ver `_process_numero_contratos`):
-         qualquer linha de um "Anomes" diferente do mês/ano corrente é
-         descartada, tanto da Prévia já salva quanto do download desta
-         execução, antes de mesclar sem duplicar por `Cnpj Da Loja` +
-         `Filial` + `Anomes`. Chave nova = 🟩 verde, chave existente com
-         dado alterado = 🟨 amarelo.
-      3. A planilha de origem oficial ("Base Price", uma por ano) continua
-         recebendo o download da execução INTEIRO (todos os meses do ano
-         corrente, não só a Prévia recortada do passo 2) - a chave nova é
-         acrescentada depois da última linha já preenchida (🟩 verde) e a
-         chave existente é atualizada onde já estava se algum dado mudou
-         (🟨 amarelo); nunca remove uma linha. Roteado por ano a partir de
-         TODOS os anos presentes no download desta execução. Um ano já
-         fechado (que o filtro "Referência = Este Ano" do Looker parou de
-         trazer) continua preservado no próprio arquivo de origem daquele
-         ano, já que `_acumular_planilha` nunca descarta uma linha
-         existente na origem, mesmo sem receber dado novo dela.
+         de "Número de Contratos"): qualquer linha de "Anomes" diferente do
+         mês/ano corrente é descartada antes de mesclar sem duplicar por
+         `Cnpj Da Loja` + `Filial` + `Anomes`.
+      3. A planilha de origem oficial (uma por ano) continua recebendo o
+         download da execução INTEIRO (todos os meses do ano, não só a
+         Prévia recortada do passo 2); nunca remove uma linha. Roteado por
+         ano a partir de TODOS os anos presentes no download. Um ano já
+         fechado (que o filtro "Referência = Este Ano" parou de trazer)
+         continua preservado no arquivo de origem daquele ano.
 
-    Em ambas as planilhas (Prévia e origem oficial), o resultado final fica
-    ordenado por "Anomes" crescente (do mês mais antigo para o mais
-    recente) - a ordenação é estável, então dentro de um mesmo Anomes os
-    dados incluídos por último continuam por último, não embaralha nada.
+    Em ambas as planilhas, o resultado final fica ordenado por "Anomes"
+    crescente (ordenação estável, não embaralha dados dentro do mesmo mês).
     """
     def _ordenar_por_anomes(df: pd.DataFrame) -> pd.DataFrame:
         if "Anomes" in df.columns:
@@ -713,16 +786,10 @@ def _process_carteira_parceiros(downloaded_path: Path, base: dict) -> Path:
         origem_path.parent.mkdir(parents=True, exist_ok=True)
         df_final, df_anterior = _acumular_planilha(origem_path, df_ano_tratado, CHAVE_UNICA_CARTEIRA_PARCEIROS)
 
-        # `pd.concat` (dentro de `_acumular_planilha`) mantém a ordem de
-        # colunas da planilha de origem já existente - como essa base não
-        # tem uma lista fixa de `colunas_manter` (diferente das outras 3),
-        # se o Looker já tiver reordenado alguma coluna desde a última vez
-        # que a origem foi criada/salva (ex: "Loja Nova"), a origem ia
-        # divergir da Prévia (que sempre reflete a ordem atual do Looker) e
-        # ficar "presa" na ordem antiga para sempre. Reordena para bater
-        # com a ordem atual (`df_tratado.columns`) antes de salvar -
-        # qualquer coluna legada que não exista mais no download vai para
-        # o final, sem perder nenhum dado.
+        # `pd.concat` (em `_acumular_planilha`) mantém a ordem de colunas da
+        # origem já existente - como essa base não tem `colunas_manter` fixo,
+        # reordena para bater com a ordem atual do Looker (`df_tratado.columns`)
+        # antes de salvar; coluna legada que não existe mais vai para o final.
         colunas_atuais = [c for c in df_tratado.columns if c in df_final.columns]
         colunas_legado = [c for c in df_final.columns if c not in df_tratado.columns]
         df_final = df_final[colunas_atuais + colunas_legado]
@@ -738,6 +805,8 @@ def _process_carteira_parceiros(downloaded_path: Path, base: dict) -> Path:
             "Planilha de origem atualizada: %s (+%d linhas novas, %d no total)",
             origem_path, linhas_novas, len(df_final),
         )
+        if _eh_ano_corrente(ano):  # só a planilha do ano corrente recebe o filtro de mês
+            _filtrar_mes_atual_e_anterior(origem_path, "Anomes")
         origem_paths.append(origem_path)
         linhas_total_todos_anos += len(df_final)
         linhas_novas_todos_anos += linhas_novas
@@ -749,10 +818,9 @@ def _process_carteira_parceiros(downloaded_path: Path, base: dict) -> Path:
 
 def _valor_para_excel(v):
     """Converte um valor de célula pandas/numpy para um tipo que o openpyxl
-    aceita diretamente em `Worksheet.append` (usado por
-    `_acumular_origem_comissao_a_vista`, que grava linha a linha via
-    openpyxl - as demais bases usam `DataFrame.to_excel`, que já faz essa
-    conversão sozinho)."""
+    aceita em `Worksheet.append` (usado por `_acumular_origem_comissao_a_vista`,
+    que grava linha a linha via openpyxl - as demais bases usam
+    `DataFrame.to_excel`, que já faz essa conversão sozinho)."""
     if pd.isna(v):
         return None
     if isinstance(v, pd.Timestamp):
@@ -763,10 +831,9 @@ def _valor_para_excel(v):
 
 
 def _valor_como_texto(v):
-    """Converte `v` para string, sem deixar `.0` sobrando quando o valor é
-    um float "inteiro" (ex: 202608.0 -> "202608", não "202608.0") - usado
-    para colunas que a planilha já guarda como texto (ver
-    `_colunas_como_texto`)."""
+    """Converte `v` para string, sem deixar `.0` sobrando quando o valor é um
+    float "inteiro" (ex: 202608.0 -> "202608") - usado para colunas que a
+    planilha já guarda como texto (ver `_colunas_como_texto`)."""
     if pd.isna(v):
         return None
     if isinstance(v, np.generic):
@@ -778,18 +845,16 @@ def _valor_como_texto(v):
 
 def _colunas_como_texto(ws, linha_referencia: int, colunas) -> set:
     """
-    Identifica quais colunas a planilha já guarda como **texto** (não
-    número), olhando o tipo do valor em algumas linhas de referência - a
-    planilha oficial de "Comissão à Vista" guarda "Cnpj Master", "Cnpj
-    Corban" e "Anomes Apuracao" como texto, mas o relatório baixado do
-    Looker traz esses mesmos campos como número. Sem converter, CNPJs
-    (números de 14 dígitos) aparecem em notação científica no Excel (ex:
-    "4,11635E+13") nas linhas novas, diferente do resto da planilha.
+    Identifica quais colunas a planilha já guarda como texto (não número),
+    olhando o tipo do valor em algumas linhas de referência - a planilha
+    oficial de "Comissão à Vista" guarda "Cnpj Master", "Cnpj Corban" e
+    "Anomes Apuracao" como texto, mas o download do Looker traz esses
+    campos como número. Sem converter, CNPJs aparecem em notação
+    científica nas linhas novas.
 
-    Confere um pequeno intervalo de linhas (não só uma) e considera texto
-    se achar QUALQUER valor string numa delas - uma única linha de
-    referência com aquela célula vazia poderia mascarar uma coluna que na
-    prática sempre vem como texto.
+    Confere várias linhas (não só uma) e considera texto se achar QUALQUER
+    valor string entre elas, para não deixar uma linha de referência com
+    célula vazia mascarar uma coluna que na prática sempre vem como texto.
     """
     colunas_texto = set()
     ultima_linha = min(linha_referencia + 9, ws.max_row)
@@ -804,11 +869,8 @@ def _colunas_como_texto(ws, linha_referencia: int, colunas) -> set:
 def _formatar_celula_como(celula, referencia):
     """Copia número/fonte/preenchimento/borda/alinhamento da célula
     `referencia` para `celula` - usado ao anexar linhas na planilha de
-    origem oficial de "Comissão à Vista" para seguir o modelo que a
-    planilha já tinha antes desta base existir no RPA (`ws.append()`
-    sozinho não herda nenhuma formatação, e a referência é sempre a 1ª
-    linha de dado real, que segue o alinhamento padrão da planilha - sem
-    forçar alinhamento à direita)."""
+    origem oficial de "Comissão à Vista", já que `ws.append()` sozinho não
+    herda nenhuma formatação da planilha existente."""
     celula.number_format = referencia.number_format
     celula.font = copy(referencia.font)
     celula.fill = copy(referencia.fill)
@@ -818,13 +880,11 @@ def _formatar_celula_como(celula, referencia):
 
 def _separar_linha_totais(df: pd.DataFrame) -> tuple[pd.DataFrame, int | None]:
     """
-    A planilha de origem oficial de "Comissão à Vista" já tinha, antes
-    desta base existir no RPA, uma linha de totais (identificação vazia,
-    soma/média nas colunas numéricas - mesmo padrão da linha de rodapé que
-    o próprio relatório do Looker traz, detectada aqui pela mesma coluna
-    "Cd Contrato" vazia). Separa essa linha (se existir) do restante dos
-    dados. Retorna (df_sem_totais, posição 0-based da linha de totais no
-    DataFrame original, ou None se não havia).
+    A planilha de origem oficial de "Comissão à Vista" tem uma linha de
+    totais (identificação vazia, soma/média nas colunas numéricas),
+    detectada pela coluna "Cd Contrato" vazia. Separa essa linha (se
+    existir) do restante dos dados. Retorna (df_sem_totais, posição
+    0-based da linha de totais no DataFrame original, ou None se não havia).
     """
     if "Cd Contrato" not in df.columns or df.empty:
         return df, None
@@ -838,10 +898,8 @@ def _separar_linha_totais(df: pd.DataFrame) -> tuple[pd.DataFrame, int | None]:
 def _calcular_linha_totais(df: pd.DataFrame) -> dict:
     """
     Recalcula a linha de totais da planilha de origem oficial de "Comissão
-    à Vista" a partir de TODOS os dados atuais (antigos + novos desta
-    execução): soma nas colunas que começam com "R$", média nas que
-    começam com "%", e vazio nas colunas de identificação - mesmo padrão
-    que a planilha já usava antes desta base existir no RPA.
+    à Vista" a partir de TODOS os dados atuais: soma nas colunas "R$...",
+    média nas colunas "%...", vazio nas colunas de identificação.
     """
     linha = {}
     for col in df.columns:
@@ -858,36 +916,37 @@ def _acumular_origem_comissao_a_vista(
     path: Path, df_previa: pd.DataFrame, chave, subset, nome_planilha: str, aplicar_autofiltro: bool,
 ) -> tuple[int, int]:
     """
-    Mescla `df_previa` (a Prévia já acumulada) na planilha de origem
-    oficial de "Comissão à Vista" sem duplicar por `chave` - cria a
-    planilha do zero se ainda não existir; senão, ACRESCENTA depois da
-    última linha as chaves genuinamente novas (🟩 verde) e ATUALIZA no
-    lugar as chaves já existentes cujo algum dado mudou (🟨 amarelo) -
-    nunca remove uma linha. Mesmo padrão de cor das outras 4 bases
-    (`_marcar_linhas_novas_e_editadas`), mas aplicado à mão célula a
-    célula (em vez de `DataFrame.to_excel`), porque esta planilha precisa
-    preservar a formatação (texto/alinhamento) herdada da 1ª linha de dado
-    já existente e a linha de totais no final.
+    Mescla `df_previa` na planilha de origem oficial de "Comissão à Vista"
+    sem duplicar por `chave` - cria a planilha do zero se ainda não
+    existir; senão, ACRESCENTA as chaves genuinamente novas (verde) e
+    ATUALIZA no lugar as chaves existentes com dado alterado (amarelo) -
+    nunca remove uma linha. Editada célula a célula (em vez de
+    `DataFrame.to_excel`) para preservar a formatação herdada e a linha de
+    totais no final.
 
-    A planilha já vinha, antes desta base existir no RPA, com uma linha de
-    totais no final (identificação vazia, soma nas colunas "R$..." e
-    média nas colunas "%..." - ver `_calcular_linha_totais`). Ela é
-    SEMPRE removida de onde estiver, recalculada com todos os dados atuais
-    (existentes + atualizados + novos) e recolocada como a última linha -
-    assim nunca fica "presa" no meio conforme mais dados forem adicionados
-    nas próximas execuções.
+    A linha de totais (identificação vazia, soma/média - ver
+    `_calcular_linha_totais`) é SEMPRE removida de onde estiver,
+    recalculada com todos os dados atuais e recolocada como última linha -
+    assim nunca fica presa no meio conforme mais dados são adicionados.
 
     Retorna (linhas novas + editadas nesta execução, linhas totais depois -
     sem contar a própria linha de totais).
+
+    Em toda gravação (primeira execução ou atualização), o resultado final
+    fica ordenado por "Anomes Apuracao" crescente - não só o bloco novo, a
+    planilha inteira é reescrita nessa ordem a cada execução.
     """
+    coluna_data = "Anomes Apuracao"
+
     if not path.exists():
-        _com_retry_arquivo_bloqueado(path, lambda: df_previa.to_excel(path, index=False, sheet_name="sheet1"))
+        df_previa_ordenada = _ordenar_por_coluna(coluna_data)(df_previa)
+        _com_retry_arquivo_bloqueado(path, lambda: df_previa_ordenada.to_excel(path, index=False, sheet_name="sheet1"))
         wb = load_workbook(path)
         ws = wb.active
         ws.title = ws.title.lower()  # nome da aba sempre minúsculo, independente de como veio
-        if len(df_previa) >= 1:
-            totais = _calcular_linha_totais(df_previa)
-            ws.append([_valor_para_excel(totais.get(c)) for c in df_previa.columns])
+        if len(df_previa_ordenada) >= 1:
+            totais = _calcular_linha_totais(df_previa_ordenada)
+            ws.append([_valor_para_excel(totais.get(c)) for c in df_previa_ordenada.columns])
             linha_referencia = ws.cell(row=2, column=1).row  # 1ª linha de dado real
             for col in range(1, ws.max_column + 1):
                 _formatar_celula_como(
@@ -896,9 +955,9 @@ def _acumular_origem_comissao_a_vista(
         _com_retry_arquivo_bloqueado(path, lambda: wb.save(path))
         if aplicar_autofiltro:
             _apply_excel_autofilter(path)
-        _marcar_linhas_novas_e_editadas(path, df_previa, chave, None)
-        logger.info("Planilha '%s' criada (primeira execução): %s (%d linhas)", nome_planilha, path, len(df_previa))
-        return len(df_previa), len(df_previa)
+        _marcar_linhas_novas_e_editadas(path, df_previa_ordenada, chave, None)
+        logger.info("Planilha '%s' criada (primeira execução): %s (%d linhas)", nome_planilha, path, len(df_previa_ordenada))
+        return len(df_previa_ordenada), len(df_previa_ordenada)
 
     df_existente_completo = _com_retry_arquivo_bloqueado(path, lambda: pd.read_excel(path))
     df_existente, posicao_totais = _separar_linha_totais(df_existente_completo)
@@ -955,61 +1014,81 @@ def _acumular_origem_comissao_a_vista(
     # continua válida mesmo depois de remover a linha de totais de
     # qualquer posição (deletar uma linha mais abaixo não afeta a linha 2).
     linha_referencia = 2 if ws.max_row >= 2 else None
-
-    if linha_totais_excel is not None:
-        ws.delete_rows(linha_totais_excel, 1)
-
-    # Limpa a cor de execuções anteriores antes de recolorir - só o que
-    # mudar NESTA execução deve ficar destacado. Feito à mão (diferente das
-    # outras 4 bases) porque esta planilha não é reescrita do zero a cada
-    # execução via `DataFrame.to_excel` - é editada célula a célula pra
-    # preservar a formatação herdada.
-    sem_fill = PatternFill(fill_type=None)
-    for row in ws.iter_rows(min_row=2, max_row=ws.max_row):
-        for cell in row:
-            cell.fill = sem_fill
-
     colunas_texto = _colunas_como_texto(ws, linha_referencia, df_existente.columns) if linha_referencia else set()
 
-    # Atualiza no lugar as linhas cuja chave já existia e teve algum dado alterado
+    # Captura a formatação da linha de referência ANTES de apagar as linhas
+    # de dado (o rewrite abaixo reconstrói a planilha inteira em ordem
+    # cronológica, então a linha 2 física não existe mais depois do
+    # `delete_rows` - sem essa captura, perderíamos a formatação herdada).
+    formato_colunas = None
+    if linha_referencia:
+        formato_colunas = [
+            (
+                ws.cell(row=linha_referencia, column=col).number_format,
+                copy(ws.cell(row=linha_referencia, column=col).font),
+                copy(ws.cell(row=linha_referencia, column=col).border),
+                copy(ws.cell(row=linha_referencia, column=col).alignment),
+            )
+            for col in range(1, ws.max_column + 1)
+        ]
+
+    def _aplicar_formato_capturado(row_idx: int):
+        if not formato_colunas:
+            return
+        for col, (number_format, font, border, alignment) in enumerate(formato_colunas, start=1):
+            cell = ws.cell(row=row_idx, column=col)
+            cell.number_format = number_format
+            cell.font = font
+            cell.border = border
+            cell.alignment = alignment
+
+    # Aplica as edições nos dados (ainda em pandas, sem tocar no Excel) e
+    # identifica por CHAVE quem é novo/editado - a planilha é reconstruída
+    # do zero em ordem cronológica logo abaixo, então cor por posição não
+    # serve mais aqui.
     df_existente_atualizada = df_existente.copy()
     for posicao_existente, idx_novo in edicoes:
-        linha_excel = posicao_existente + 2  # +1 cabeçalho, +1 0-based -> 1-based
-        linha_dados = df_previa_alinhada.iloc[idx_novo]
-        for col, (nome, v) in enumerate(linha_dados.items(), start=1):
-            valor = _valor_como_texto(v) if nome in colunas_texto else _valor_para_excel(v)
-            ws.cell(row=linha_excel, column=col).value = valor
-        if linha_referencia:
-            for col in range(1, ws.max_column + 1):
-                _formatar_celula_como(ws.cell(row=linha_excel, column=col), ws.cell(row=linha_referencia, column=col))
-        for cell in ws[linha_excel]:
-            cell.fill = AMARELO_LINHA_EDITADA
-        df_existente_atualizada.iloc[posicao_existente] = linha_dados.values
+        df_existente_atualizada.iloc[posicao_existente] = df_previa_alinhada.iloc[idx_novo].values
 
-    # Acrescenta as linhas genuinamente novas no final
-    if not df_realmente_novo.empty:
-        primeira_linha_nova = ws.max_row + 1
-        for _, linha in df_realmente_novo.iterrows():
-            valores = [
-                _valor_como_texto(v) if nome in colunas_texto else _valor_para_excel(v)
-                for nome, v in linha.items()
-            ]
-            ws.append(valores)
-        if linha_referencia:
-            for row_idx in range(primeira_linha_nova, ws.max_row + 1):
-                for col in range(1, ws.max_column + 1):
-                    _formatar_celula_como(ws.cell(row=row_idx, column=col), ws.cell(row=linha_referencia, column=col))
-                for cell in ws[row_idx]:
-                    cell.fill = VERDE_LINHA_NOVA
+    chaves_novas = set(chave_previa_serie.iloc[indices_novos])
+    chaves_editadas = set(chave_previa_serie.iloc[[idx for _, idx in edicoes]])
 
     df_tudo = pd.concat([df_existente_atualizada, df_realmente_novo], ignore_index=True)
+    df_tudo = _ordenar_por_coluna(coluna_data)(df_tudo)
+    chave_tudo_serie = _chave_como_serie(df_tudo, chave)
+
+    sem_fill = PatternFill(fill_type=None)
+
+    # Apaga TODAS as linhas de dado (mantém só o cabeçalho) para reescrever
+    # em ordem cronológica - diferente das outras bases (que reescrevem via
+    # `DataFrame.to_excel`), aqui precisa ser explícito porque a planilha é
+    # editada célula a célula pra preservar a formatação herdada.
+    if ws.max_row >= 2:
+        ws.delete_rows(2, ws.max_row - 1)
+
+    for idx, (_, linha) in enumerate(df_tudo.iterrows()):
+        valores = [
+            _valor_como_texto(v) if nome in colunas_texto else _valor_para_excel(v)
+            for nome, v in linha.items()
+        ]
+        ws.append(valores)
+        row_idx = ws.max_row
+        _aplicar_formato_capturado(row_idx)
+        chave_linha = chave_tudo_serie.iloc[idx]
+        if chave_linha in chaves_novas:
+            fill = VERDE_LINHA_NOVA
+        elif chave_linha in chaves_editadas:
+            fill = AMARELO_LINHA_EDITADA
+        else:
+            fill = sem_fill
+        for cell in ws[row_idx]:
+            cell.fill = fill
+
     totais = _calcular_linha_totais(df_tudo)
     ws.append([_valor_para_excel(totais.get(c)) for c in df_existente.columns])
-    if linha_referencia:
-        for col in range(1, ws.max_column + 1):
-            _formatar_celula_como(ws.cell(row=ws.max_row, column=col), ws.cell(row=linha_referencia, column=col))
-        for cell in ws[ws.max_row]:
-            cell.fill = sem_fill  # linha de totais nunca é colorida, mesmo que a linha 2 esteja
+    _aplicar_formato_capturado(ws.max_row)
+    for cell in ws[ws.max_row]:
+        cell.fill = sem_fill  # linha de totais nunca é colorida
 
     _com_retry_arquivo_bloqueado(path, lambda: wb.save(path))
     if aplicar_autofiltro:
@@ -1027,43 +1106,29 @@ def _process_comissao_a_vista(downloaded_path: Path, base: dict) -> Path:
     """
     Fluxo específico da base "Comissão à Vista - Analítico": duas
     planilhas são atualizadas a cada execução, com regras diferentes:
-      - Prévia (`config.caminho_previa_comissao_a_vista`): reescrita por
-        inteiro a cada execução, mesclando com o que já existia (uma
-        chave já existente é ATUALIZADA com os dados mais recentes
-        baixados, não só ignorada) e recalculando as cores do zero -
-        🟩 verde para chave nova, 🟨 amarelo para chave existente com
-        algum dado alterado - exatamente o mesmo padrão das outras 4
-        bases (`_marcar_linhas_novas_e_editadas`).
-      - Planilha de origem oficial
-        (`config.caminho_planilha_origem_comissao_a_vista`, que já vinha
-        sendo mantida pelo time com dados de meses anteriores antes desta
-        base existir aqui): recebe a mesma Prévia já acumulada - chave
-        nova é acrescentada depois da última linha já preenchida (🟩
-        verde) e chave existente é atualizada onde já estava se algum
-        dado mudou (🟨 amarelo); nunca remove uma linha
-        (`_acumular_origem_comissao_a_vista`).
+      - Prévia: reescrita por inteiro a cada execução, mesclando com o que
+        já existia (chave existente é ATUALIZADA, não só ignorada) e
+        recalculando as cores do zero - mesmo padrão das outras bases
+        (`_marcar_linhas_novas_e_editadas`).
+      - Planilha de origem oficial, uma por ano (ex: "Comissão à Vista -
+        Analítico - 2026.xlsx"), roteada a partir do ano em "Anomes
+        Apuracao": recebe a Prévia já acumulada, filtrada para aquele ano -
+        nunca remove uma linha (`_acumular_origem_comissao_a_vista`). Um
+        ano fechado (ex: 2025) nunca é escrito de novo, só o ano corrente
+        (`_eh_ano_corrente`).
     Chave em ambas: `regras["chave_comparacao"]`, config.py.
 
-    Validada contra um download real e contra a planilha de origem oficial
-    real (6 meses de histórico) em 17/08/2026: o arquivo baixado traz uma
-    linha de totais no final (todas as colunas de identificação vêm
-    vazias, só os valores em R$ aparecem somados) - essa linha é descartada
-    antes de qualquer comparação, filtrando por "Cd Contrato" vazio (não é
-    um registro de comissão de verdade, é só o rodapé do relatório).
+    O arquivo baixado traz uma linha de totais no final (colunas de
+    identificação vazias, só os valores em R$ somados) - descartada antes
+    de qualquer comparação, filtrando por "Cd Contrato" vazio.
 
-    IMPORTANTE (bug real encontrado e corrigido em 17/08/2026): pelo menos
-    uma coluna do relatório vem do Looker com espaços/quebra de linha ao
-    redor do nome (ex: "\n    R$ Comissão À Vista Bruto - Master\n    "),
-    enquanto a planilha de origem oficial (mantida à parte pelo time) tem
-    o mesmo nome sem esses espaços. Sem normalizar, o alinhamento de
-    colunas trata como duas colunas diferentes e a coluna correspondente
-    fica vazia nas linhas novas - por isso os nomes de coluna do download
-    são sempre limpos (`str.strip()`) antes de qualquer comparação.
+    Pelo menos uma coluna do relatório vem do Looker com espaços/quebra de
+    linha ao redor do nome, enquanto a planilha de origem oficial não tem
+    - por isso os nomes de coluna do download são sempre limpos
+    (`str.strip()`) antes de qualquer comparação de colunas.
     """
     previa_path = config.caminho_previa_comissao_a_vista()
     previa_path.parent.mkdir(parents=True, exist_ok=True)
-    origem_path = config.caminho_planilha_origem_comissao_a_vista()
-    origem_path.parent.mkdir(parents=True, exist_ok=True)
     chave = base["regras"].get("chave_comparacao")
     subset = list(chave) if isinstance(chave, (list, tuple)) else ([chave] if chave else None)
     autofiltro = bool(base["regras"].get("aplicar_autofiltro_excel"))
@@ -1082,7 +1147,7 @@ def _process_comissao_a_vista(downloaded_path: Path, base: dict) -> Path:
     if df_novo.empty:
         logger.warning("Relatório 'Comissão à Vista' baixado veio vazio - nada para adicionar.")
         registrar_historico(base["nome"], linhas_baixadas, 0, None, "Sem dados no período")
-        return origem_path
+        return previa_path
 
     # --- Prévia: reescrita + cor recalculada a cada execução (igual as outras 4 bases) ---
     df_previa_anterior = _com_retry_arquivo_bloqueado(previa_path, lambda: pd.read_excel(previa_path)) if previa_path.exists() else None
@@ -1111,15 +1176,37 @@ def _process_comissao_a_vista(downloaded_path: Path, base: dict) -> Path:
         previa_path, len(df_previa_final),
     )
 
-    # --- Planilha de origem oficial: mescla a Prévia já acumulada (nunca perde linha) ---
-    linhas_novas_origem, linhas_total_origem = _acumular_origem_comissao_a_vista(
-        origem_path, df_previa_final, chave, subset, "Comissão à Vista - Analítico (origem oficial)",
-        aplicar_autofiltro=autofiltro,
-    )
+    # --- Planilha de origem oficial: mescla a Prévia já acumulada (nunca perde linha),
+    # roteada por ano a partir de "Anomes Apuracao" - só o ano corrente é escrito. ---
+    anos_presentes = sorted(df_previa_final["Anomes Apuracao"].astype(str).str[:4].unique())
+    origem_paths = []
+    linhas_total_todos_anos = 0
+    linhas_novas_todos_anos = 0
+
+    for ano_str in anos_presentes:
+        ano = int(ano_str)
+        if not _eh_ano_corrente(ano):
+            logger.info(
+                "Base '%s': ano %d é histórico fechado - não escrevendo de novo na planilha de origem.",
+                base["nome"], ano,
+            )
+            continue
+
+        df_ano_previa = df_previa_final[df_previa_final["Anomes Apuracao"].astype(str).str[:4] == ano_str]
+        origem_path = config.caminho_planilha_origem_comissao_a_vista(ano)
+        origem_path.parent.mkdir(parents=True, exist_ok=True)
+        linhas_novas_origem, linhas_total_origem = _acumular_origem_comissao_a_vista(
+            origem_path, df_ano_previa, chave, subset, f"Comissão à Vista - Analítico - {ano} (origem oficial)",
+            aplicar_autofiltro=autofiltro,
+        )
+        _filtrar_mes_atual_e_anterior(origem_path, "Anomes Apuracao", coluna_totais="Cd Contrato")
+        origem_paths.append(origem_path)
+        linhas_total_todos_anos += linhas_total_origem
+        linhas_novas_todos_anos += linhas_novas_origem
 
     observacao = "Sem dados no período" if linhas_baixadas == 0 else ""
-    registrar_historico(base["nome"], linhas_baixadas, linhas_novas_origem, linhas_total_origem, observacao)
-    return origem_path
+    registrar_historico(base["nome"], linhas_baixadas, linhas_novas_todos_anos, linhas_total_todos_anos, observacao)
+    return origem_paths[-1] if origem_paths else previa_path
 
 
 def process_base(downloaded_path: Path, base: dict) -> Path:
@@ -1135,9 +1222,6 @@ def process_base(downloaded_path: Path, base: dict) -> Path:
     if modo == "planilha_origem_local_meta_financiamento_seguro":
         return _process_meta_financiamento_seguro(downloaded_path, base)
 
-    if modo == "planilha_origem_local_meta_financiamento_seguro_mes_anterior":
-        return _process_meta_financiamento_seguro_mes_anterior(downloaded_path, base)
-
     if modo == "planilha_origem_local_carteira_parceiros":
         return _process_carteira_parceiros(downloaded_path, base)
 
@@ -1145,3 +1229,74 @@ def process_base(downloaded_path: Path, base: dict) -> Path:
         return _process_comissao_a_vista(downloaded_path, base)
 
     raise ValueError(f"Base '{base['id']}' não tem 'modo' de tratamento reconhecido em config.py")
+
+
+def processar_ano_fechado(downloaded_path: Path, base_id: str, ano: int) -> Path:
+    """
+    Processa a carga única de um ano fechado (ex: 2025) para uma das 4
+    bases em `looker_automation.BASES_COM_ANO_FECHADO`, gravando direto na
+    planilha de origem oficial daquele ano (verde para tudo, já que é a
+    primeira carga) - usada só pelo script de backfill de histórico
+    (`backfill_ano_fechado.py`), nunca pelo fluxo diário/mensal normal
+    (`process_base`), que por isso nunca reescreve um ano já fechado (ver
+    `_eh_ano_corrente`).
+    """
+    base = config.get_base_by_id(base_id)
+    autofiltro = bool(base["regras"].get("aplicar_autofiltro_excel"))
+
+    if base_id == "meta_financiamento_seguro":
+        df = pd.read_excel(downloaded_path)
+        df = _select_columns(df, base)
+        origem_path = config.caminho_planilha_origem_meta_financiamento_seguro(ano)
+        origem_path.parent.mkdir(parents=True, exist_ok=True)
+        df_final, linhas_novas = _acumular_e_colorir_origem(
+            origem_path, df, CHAVE_UNICA_META_FINANCIAMENTO_SEGURO, autofiltro,
+            ordenar=_ordenar_por_coluna("Anomes Apuracao"),
+        )
+        total = len(df_final)
+
+    elif base_id == "dias_sem_producao":
+        df = pd.read_excel(downloaded_path)
+        df = _select_columns(df, base)
+        origem_path = config.caminho_planilha_origem_dias_sem_producao(ano)
+        origem_path.parent.mkdir(parents=True, exist_ok=True)
+        df_final, linhas_novas = _acumular_e_colorir_origem(
+            origem_path, df, CHAVE_UNICA_DIAS_SEM_PRODUCAO, autofiltro,
+            ordenar=_ordenar_por_coluna("Safra Mes"),
+        )
+        total = len(df_final)
+
+    elif base_id == "comissao_a_vista":
+        df = pd.read_excel(downloaded_path)
+        df.columns = df.columns.str.strip()
+        if "Cd Contrato" in df.columns:
+            df = df[~df["Cd Contrato"].isna()].reset_index(drop=True)
+        chave = base["regras"].get("chave_comparacao")
+        subset = list(chave) if isinstance(chave, (list, tuple)) else ([chave] if chave else None)
+        origem_path = config.caminho_planilha_origem_comissao_a_vista(ano)
+        origem_path.parent.mkdir(parents=True, exist_ok=True)
+        linhas_novas, total = _acumular_origem_comissao_a_vista(
+            origem_path, df, chave, subset, f"Comissão à Vista - Analítico - {ano} (origem oficial)",
+            aplicar_autofiltro=autofiltro,
+        )
+
+    elif base_id == "numero_contratos":
+        df = pd.read_excel(downloaded_path)
+        df = _apply_row_filters(df, base)
+        df = _select_columns(df, base)
+        origem_path = config.caminho_planilha_origem_numero_contratos_anual(ano)
+        origem_path.parent.mkdir(parents=True, exist_ok=True)
+        df_final, linhas_novas = _acumular_e_colorir_origem(
+            origem_path, df, CHAVE_UNICA_NUMERO_CONTRATOS, autofiltro, ordenar=_ordenar_por_data,
+        )
+        total = len(df_final)
+
+    else:
+        raise ValueError(f"Base '{base_id}' não suporta carga de ano fechado")
+
+    logger.info(
+        "Carga do ano fechado %d concluída para '%s': %s (+%d linhas, %d no total)",
+        ano, base["nome"], origem_path, linhas_novas, total,
+    )
+    registrar_historico(f"{base['nome']} - {ano} (ano fechado)", len(df), linhas_novas, total)
+    return origem_path

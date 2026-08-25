@@ -179,9 +179,26 @@ Python do `venv` e passando o argumento correspondente, por exemplo:
 - Programa/script: `C:\caminho\para\RPA_c6_veiculos\venv\Scripts\python.exe`
 - Argumentos: `main.py --frequencia diaria`
 - Iniciar em: `C:\caminho\para\RPA_c6_veiculos`
+- Horário: `06:00`
 
-Repetir para `--frequencia semanal_segunda` (só às segundas) e
-`--frequencia mensal` (uma vez por mês).
+Repetir para `--frequencia semanal_segunda` (só às segundas, horário
+`06:20`) e `--frequencia mensal` (dia 1 de cada mês, horário `06:40`).
+
+**Importante:** cada tarefa precisa de um horário próprio, escalonado por
+alguns minutos (não as 3 no mesmo `06:00`). Duas tarefas disparando no
+mesmíssimo segundo (ex: diária e semanal numa segunda-feira) fazem dois
+processos `main.py` nascerem ao mesmo tempo e logarem simultaneamente na
+mesma conta do portal C6 - o portal só permite uma sessão ativa por
+usuário e derruba a mais antiga (ver `looker_automation.login`), o que
+pode fazer uma das duas execuções falhar no meio da navegação mesmo com a
+trava de execução única (`main._trava_execucao_unica`) funcionando
+corretamente.
+
+Em **todas as 3 tarefas**, marcar a opção "Executar assim que possível
+após uma inicialização agendada perdida" (`StartWhenAvailable`) na aba
+Condições - se a máquina estiver desligada/em suspensão no horário
+programado, a tarefa dispara assim que ela voltar a ficar disponível, em
+vez de simplesmente não rodar naquele dia/semana/mês sem gerar nenhum erro.
 
 ## 8. Problemas já conhecidos / pontos de atenção
 
