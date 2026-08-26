@@ -445,7 +445,7 @@ def _selecionar_intervalo_customizado_dt_relatorio(final_page: Page, data_inicio
     (que usa `_alterar_periodo_dt_relatorio` com um preset).
 
     `data_inicio`/`data_fim` no formato "YYYY/MM/DD" (ex: "2025/01/01").
-    Confirmado ao vivo contra o portal em 25/08/2026: por baixo do texto
+    Confirmado ao vivo contra o portal: por baixo do texto
     exibido existem `input[data-testid="date-from-text-input"]` e
     `input[data-testid="date-to-text-input"]` editáveis diretamente
     (`.fill()`), sem precisar abrir o calendário visual.
@@ -651,8 +651,8 @@ def apply_referencia_month_ano(final_page: Page, ano: int):
     "dias_sem_producao" (com `ano = date.today().year`, para buscar o ano
     corrente inteiro a cada execução, não só o mês atual) quanto na carga
     única de um ano fechado de histórico (ex: 2025, via
-    `download_ano_fechado_report`). Confirmado ao vivo contra o portal em
-    25/08/2026 - ver `_selecionar_ano`.
+    `download_ano_fechado_report`). Confirmado ao vivo contra o portal -
+    ver `_selecionar_ano`.
 
     O padrão salvo no dashboard é "is this month" - por isso sempre
     precisamos trocar, mesmo no fluxo diário.
@@ -763,7 +763,7 @@ def _selecionar_ano(final_page: Page, ano: int):
     corrente, buscando o ano inteiro a cada execução) quanto na carga
     única de um ano fechado de histórico (ex: 2025).
 
-    Confirmado ao vivo contra o portal em 25/08/2026: ao abrir a lista de
+    Confirmado ao vivo contra o portal: ao abrir a lista de
     operadores existe a opção nativa "is in the year", que abre um campo
     numérico pré-preenchido com o ano corrente - basta sobrescrever com o
     ano desejado. O combobox de operador é sempre o primeiro
@@ -1059,7 +1059,7 @@ def download_ano_fechado_report(context: BrowserContext, page: Page, base_id: st
     Cada base usa seu próprio widget de período (ver
     `apply_safra_mes_filter`, `apply_referencia_month_ano`,
     `apply_analitico_filters_ano_fechado`), todos validados ao vivo contra
-    o portal em 25/08/2026 antes de existir aqui.
+    o portal antes de existir aqui.
     """
     if base_id not in BASES_COM_ANO_FECHADO:
         raise ValueError(f"Base '{base_id}' não suporta carga de ano fechado (ver BASES_COM_ANO_FECHADO)")

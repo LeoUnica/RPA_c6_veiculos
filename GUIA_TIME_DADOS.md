@@ -290,11 +290,15 @@ apontar o caminho, para não perder o histórico já acumulado.
 
 | Base | Nome do arquivo "Prévia" | Nome do arquivo "origem" |
 | --- | --- | --- |
-| Número de Contratos | `Número de Contratos - Previa.xlsx` | `<pasta>\Numero de Contratos - {ano}\Digitação Analítico - {ano}.xlsx` (uma subpasta por ano) |
-| Dias sem Produção | `Dias sem produção - Previa.xlsx` | `<pasta>\DIAS SEM PRODUCAO.xlsx` (arquivo único) |
+| Número de Contratos | `Número de Contratos - Previa.xlsx` | `<pasta>\Digitação Analítico - {ano}.xlsx` (um arquivo por ano) |
+| Dias sem Produção | `Dias sem produção - Previa.xlsx` | `<pasta>\DIAS SEM PRODUCAO - {ano}.xlsx` (um arquivo por ano) |
 | Meta Financiamento e Seguro | `Meta Financiamento e Seguro - Previa.xlsx` | `<pasta>\Meta Financiamento Seguro - {ano}.xlsx` (um arquivo por ano) |
 | Carteira e Parceiros | `Carteira de parceiros e filiais - Previa.xlsx` | `<pasta>\CARTEIRA- {ano}.xlsx` (um arquivo por ano) |
-| Comissão à Vista - Analítico | `Comissão à Vista - Analitico - Previa.xlsx` | `<pasta>\Comissão A Vista - Analitico.xlsx` (arquivo único, sem separação por ano) |
+| Comissão à Vista - Analítico | `Comissão à Vista - Analitico - Previa.xlsx` | `<pasta>\Comissão à Vista - Analítico - {ano}.xlsx` (um arquivo por ano) |
+
+Um ano fechado (ex: 2025) nunca é escrito de novo depois de carregado - só
+o ano corrente recebe atualização a cada execução (ver
+`data_processor._eh_ano_corrente`).
 
 ## 7. VS Code - extensões recomendadas
 

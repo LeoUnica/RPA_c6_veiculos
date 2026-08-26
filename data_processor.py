@@ -354,28 +354,17 @@ def _filtrar_mes_atual_e_anterior(
     path: Path, coluna: str, *, is_date: bool = False, coluna_totais: str | None = None,
 ):
     """
-    Aplica no Excel um AutoFilter JÁ ATIVADO na coluna `coluna`, mostrando
-    somente o mês corrente e o mês civil anterior (ex: hoje em agosto/2026
-    -> mostra julho e agosto) - linhas de outros meses ficam ocultas (não
-    apagadas, `Worksheet.row_dimensions[...].hidden`), e a lista de
-    valores do filtro fica marcada só com os meses visíveis, para o Excel
-    já abrir com o filtro aplicado (não só os botões de filtro disponíveis).
+    Aplica no Excel um AutoFilter já ATIVADO na coluna `coluna`, mostrando só
+    o mês corrente e o anterior - linhas de outros meses ficam ocultas (não
+    apagadas), e a lista de valores do filtro reflete o que está visível,
+    pra o Excel já abrir filtrado. Reaplicado do zero a cada execução, então
+    a janela rola sozinha com o tempo. Usada nas 5 planilhas oficiais do ano
+    corrente, nunca no histórico fechado (2025) nem nas Prévias.
 
-    Reaplicado do zero a cada execução - a cada linha, decide de novo se
-    fica visível ou oculta, então a janela "rola" sozinha conforme o mês
-    corrente muda (não precisa de nenhuma limpeza manual antes de rodar de
-    novo). Usada nas 5 planilhas de origem oficial do ano corrente
-    (CARTEIRA, DIAS SEM PRODUCAO, Meta Financiamento Seguro, Comissão à
-    Vista, Digitação Analítico) - nunca nas planilhas de ano fechado
-    (2025) nem nas Prévias.
-
-    `is_date=True` quando `coluna` é uma data real (dia/mês/ano, ex: "Dt
-    Relatório") em vez do formato AAAAMM (Anomes Apuracao/Safra Mes/Anomes)
-    - usa um filtro de data agrupado por mês em vez de lista de valores.
-
-    `coluna_totais`, se informado, é o nome de uma coluna cuja célula
-    vazia identifica a linha de totais (Comissão à Vista) - essa linha
-    nunca é ocultada, independente do mês.
+    `is_date=True` para coluna de data real ("Dt Relatório") em vez do
+    formato AAAAMM (Anomes Apuracao/Safra Mes/Anomes).
+    `coluna_totais`: coluna cuja célula vazia identifica a linha de totais
+    (Comissão à Vista), que nunca é ocultada.
     """
     (ano_atual, mes_atual), (ano_anterior, mes_anterior) = _mes_atual_e_anterior()
 

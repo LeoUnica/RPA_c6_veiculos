@@ -10,7 +10,7 @@ Uso:
 
 Todos os 4 filtros usados aqui (Safra Mês/Referencia Month -> "is in the
 year"; Dt Relatorio Date -> intervalo customizado) foram validados ao vivo
-contra o portal em 25/08/2026 antes deste script existir - ver
+contra o portal antes deste script existir - ver
 looker_automation.download_ano_fechado_report.
 
 Roda uma vez só, por ano. Depois de completar, o ano fica congelado: o

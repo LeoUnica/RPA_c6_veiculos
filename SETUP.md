@@ -118,16 +118,16 @@ apenas apontar para onde os arquivos devem ficar):
 
 | Base | Prévia | Planilha de origem oficial |
 |---|---|---|
-| Número de Contratos | `Número de Contratos - Previa.xlsx` (sempre sobrescrita) | `<pasta>\Numero de Contratos - {ano}\Digitação Analítico - {ano}.xlsx` (uma subpasta por ano) |
-| Dias sem Produção | `Dias sem produção - Previa.xlsx` (sempre sobrescrita) | `<pasta>\DIAS SEM PRODUCAO.xlsx` (arquivo único, sem separação por ano) |
+| Número de Contratos | `Número de Contratos - Previa.xlsx` (sempre sobrescrita) | `<pasta>\Digitação Analítico - {ano}.xlsx` (um arquivo por ano, na mesma pasta) |
+| Dias sem Produção | `Dias sem produção - Previa.xlsx` (sempre sobrescrita) | `<pasta>\DIAS SEM PRODUCAO - {ano}.xlsx` (um arquivo por ano, na mesma pasta) |
 | Meta Financiamento e Seguro | `Meta Financiamento e Seguro - Previa.xlsx` (sempre sobrescrita) | `<pasta>\Meta Financiamento Seguro - {ano}.xlsx` (um arquivo por ano, na mesma pasta) |
 | Carteira e Parceiros | `Carteira de parceiros e filiais - Previa.xlsx` (sempre sobrescrita) | `<pasta>\CARTEIRA- {ano}.xlsx` (um arquivo por ano, na mesma pasta) |
-| Comissão à Vista - Analítico | `Comissão à Vista - Analitico - Previa.xlsx` (**acumulada**, nunca sobrescrita - só recebe linhas novas) | `<pasta>\Comissão A Vista - Analitico.xlsx` (**acumulada**, arquivo único sem separação por ano) |
+| Comissão à Vista - Analítico | `Comissão à Vista - Analitico - Previa.xlsx` (**acumulada**, nunca sobrescrita - só recebe linhas novas) | `<pasta>\Comissão à Vista - Analítico - {ano}.xlsx` (um arquivo por ano, na mesma pasta) |
 
 Se a planilha de origem oficial de um ano ainda não existir, a primeira
-execução cria o arquivo do zero (para Número de Contratos e Dias sem
-Produção, com o que for baixado; para Carteira e Parceiros, semeando com o
-ano inteiro disponível no Looker no momento).
+execução cria o arquivo do zero. O ano corrente recebe atualização a cada
+execução; um ano fechado (ex: 2025) nunca é escrito de novo depois de
+carregado (ver `data_processor._eh_ano_corrente`).
 
 ## 6. Rodando manualmente
 
