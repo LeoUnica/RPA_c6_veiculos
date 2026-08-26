@@ -61,8 +61,8 @@ PREVIA_NUMERO_CONTRATOS_DIR = os.getenv(
 )
 
 # Pasta raiz onde fica a planilha de origem oficial "Número de Contratos" -
-# organizada por ano, ex: ".../Numero de Contratos - 2026/Digitação
-# Analítico - 2026.xlsx".
+# direto nesta pasta, sem subpasta por ano (mesmo padrão das outras bases),
+# ex: ".../Número de Contratos/Digitação Analítico - 2026.xlsx".
 PLANILHA_ORIGEM_NUMERO_CONTRATOS_DIR = os.getenv(
     "PLANILHA_ORIGEM_NUMERO_CONTRATOS_DIR",
     r"C:\Users\leonardo.mudrik\Desktop\Setor Dados\Ana Price\Número de Contratos",
@@ -74,29 +74,13 @@ def caminho_previa_numero_contratos() -> Path:
     return Path(PREVIA_NUMERO_CONTRATOS_DIR) / "Número de Contratos - Previa.xlsx"
 
 
-def caminho_planilha_origem_numero_contratos(ano: int) -> Path:
-    """Caminho da planilha 'Digitação Analítico - {ano} - Trimestre', que
-    mantém uma JANELA MÓVEL dos últimos 90 dias (uma linha sai da planilha
-    quando fica velha demais) - ver `data_processor._process_numero_contratos`.
-    O acumulado do ano inteiro fica por conta da planilha anual abaixo."""
-    return (
-        Path(PLANILHA_ORIGEM_NUMERO_CONTRATOS_DIR)
-        / f"Numero de Contratos - {ano}"
-        / f"Digitação Analítico - {ano} - Trimestre.xlsx"
-    )
-
-
 def caminho_planilha_origem_numero_contratos_anual(ano: int) -> Path:
-    """Caminho da planilha 'Digitação Analítico - {ano}' (sem sufixo), que
-    acumula todo o histórico do ano (nunca remove uma linha) na mesma pasta
-    da planilha "Trimestre" acima - ver `data_processor._process_numero_contratos`.
-    Um ano diferente do corrente (ex: 2025 depois de fechado) nunca é
-    escrito de novo pela automação - ver `data_processor._eh_ano_corrente`."""
-    return (
-        Path(PLANILHA_ORIGEM_NUMERO_CONTRATOS_DIR)
-        / f"Numero de Contratos - {ano}"
-        / f"Digitação Analítico - {ano}.xlsx"
-    )
+    """Caminho da planilha 'Digitação Analítico - {ano}', que acumula todo
+    o histórico do ano (nunca remove uma linha) - ver
+    `data_processor._process_numero_contratos`. Um ano diferente do
+    corrente (ex: 2025 depois de fechado) nunca é escrito de novo pela
+    automação - ver `data_processor._eh_ano_corrente`."""
+    return Path(PLANILHA_ORIGEM_NUMERO_CONTRATOS_DIR) / f"Digitação Analítico - {ano}.xlsx"
 
 # Pasta "Prévia" e planilha de origem oficial de "Dias sem Produção" - por
 # ano (mesmo padrão de Meta Financiamento e Seguro/Carteira e Parceiros),
@@ -123,9 +107,8 @@ def caminho_planilha_origem_dias_sem_producao(ano: int) -> Path:
     return Path(PLANILHA_ORIGEM_DIAS_SEM_PRODUCAO_DIR) / f"DIAS SEM PRODUCAO - {ano}.xlsx"
 
 # Pasta "Prévia" e pasta raiz da planilha de origem oficial de "Meta
-# Financiamento e Seguro". Diferente de Número de Contratos, o ano fica no
-# NOME do arquivo (não em subpasta): "Meta Financiamento Seguro - {ano}.xlsx",
-# todos na mesma pasta.
+# Financiamento e Seguro" - o ano fica no NOME do arquivo (sem subpasta):
+# "Meta Financiamento Seguro - {ano}.xlsx", todos na mesma pasta.
 PREVIA_META_FINANCIAMENTO_SEGURO_DIR = os.getenv(
     "PREVIA_META_FINANCIAMENTO_SEGURO_DIR",
     r"C:\Users\leonardo.mudrik\Desktop\C6 Bank\Meta Financiamento e Seguro - Previa",
@@ -246,10 +229,7 @@ BASES = [
         "filtros": {
             "tipo_exibicao": "Valor",  # manter somente "Valor" em Tipo Exibição
             # Dt Relatorio Date -> Year To Date: baixa o ano inteiro (1º de
-            # janeiro até hoje). A planilha "Trimestre" continua recortada
-            # para os últimos 90 dias DEPOIS do merge (ver
-            # data_processor.DIAS_JANELA_TRIMESTRE_NUMERO_CONTRATOS), mas a
-            # "_Anual" recebe o ano inteiro a cada execução - ver
+            # janeiro até hoje) a cada execução - ver
             # looker_automation._alterar_periodo_dt_relatorio.
             "periodo_dt_relatorio": "Year To Date",
         },

@@ -367,7 +367,7 @@ def _filtrar_mes_atual_e_anterior(
     novo). Usada nas 5 planilhas de origem oficial do ano corrente
     (CARTEIRA, DIAS SEM PRODUCAO, Meta Financiamento Seguro, Comissão à
     Vista, Digitação Analítico) - nunca nas planilhas de ano fechado
-    (2025) nem na "Trimestre"/Prévias.
+    (2025) nem nas Prévias.
 
     `is_date=True` quando `coluna` é uma data real (dia/mês/ano, ex: "Dt
     Relatório") em vez do formato AAAAMM (Anomes Apuracao/Safra Mes/Anomes)
@@ -435,34 +435,24 @@ def _filtrar_mes_atual_e_anterior(
 
 
 CHAVE_UNICA_NUMERO_CONTRATOS = "ID Proposta"
-DIAS_JANELA_TRIMESTRE_NUMERO_CONTRATOS = 90  # janela móvel da planilha "Trimestre" - ver _process_numero_contratos
 
 
 def _process_numero_contratos(downloaded_path: Path, base: dict) -> Path:
     """
     Fluxo específico da base "Número de Contratos":
       1. Filtra Status Proposta = PROPOSTA PAGA e seleciona as colunas certas.
-      2. Acumula o download inteiro (últimos 90 dias, filtro do próprio
-         relatório) na planilha "Trimestre" (Digitação Analítico - {ano} -
-         Trimestre.xlsx). Diferente das outras planilhas de origem oficial
-         do projeto, esta NÃO acumula para sempre: a cada execução, contrato
-         mais antigo que `DIAS_JANELA_TRIMESTRE_NUMERO_CONTRATOS` (90 dias) é
-         removido - é uma janela móvel, não histórico permanente.
-      3. Mescla o download inteiro também na planilha anual "Digitação
-         Analítico - {ano}" (mesma pasta), via `_acumular_e_colorir_origem` -
-         mesma regra de cor, mas SEM a janela de 90 dias: é o acumulado
-         histórico permanente do ano (nunca remove uma linha), sempre
-         reordenado por data crescente após o merge. Só é escrita para o
-         ano corrente - um ano fechado (ex: 2025) nunca é tocado de novo,
-         já que `ano` aqui é sempre `date.today().year`.
-      4. A planilha "Prévia" continua restrita ao mês/ano de referência
+      2. Mescla o download inteiro (ano corrente inteiro, "Year To Date") na
+         planilha anual "Digitação Analítico - {ano}", via
+         `_acumular_e_colorir_origem` - nunca remove uma linha (histórico
+         permanente do ano), sempre reordenada por data crescente após o
+         merge. Só é escrita para o ano corrente - um ano fechado (ex:
+         2025) nunca é tocado de novo, já que `ano` aqui é sempre
+         `date.today().year`.
+      3. A planilha "Prévia" continua restrita ao mês/ano de referência
          (mês civil atual). Exceção: no primeiro dia do mês, também mantém
          os últimos 3 dias do mês anterior, para não perder contratos de
          fim de mês que aparecem como "PROPOSTA PAGA" com atraso.
          Deduplicação por "ID Proposta", mantendo a versão mais recente.
-
-    Na planilha do passo 2, o resultado final fica sempre reordenado por
-    data crescente a cada execução (não só o bloco novo).
     """
     chave = CHAVE_UNICA_NUMERO_CONTRATOS
     date_col = DATE_COLUMN_NUMERO_CONTRATOS
@@ -472,50 +462,26 @@ def _process_numero_contratos(downloaded_path: Path, base: dict) -> Path:
             return df[_current_month_mask_com_virada(df, date_col)]
         return df
 
-    def _apenas_janela_trimestre(df: pd.DataFrame) -> pd.DataFrame:
-        if date_col not in df.columns or df.empty:
-            return df
-        dt = pd.to_datetime(df[date_col], errors="coerce", dayfirst=True)
-        limite_inferior = pd.Timestamp(date.today() - timedelta(days=DIAS_JANELA_TRIMESTRE_NUMERO_CONTRATOS))
-        return df[dt >= limite_inferior]
-
     df_tratado = pd.read_excel(downloaded_path)
     linhas_baixadas = len(df_tratado)
     df_tratado = _apply_row_filters(df_tratado, base)
-    df_tratado = _select_columns(df_tratado, base)  # NÃO recorta por mês - mantém os 90 dias do download
+    df_tratado = _select_columns(df_tratado, base)  # NÃO recorta por mês - mantém o ano inteiro do download
 
-    # --- 1. Mescla o download inteiro na planilha "Trimestre" (janela móvel) ---
+    # --- 1. Mescla o download inteiro na planilha anual, reordenada por data crescente ---
     ano = date.today().year
-    origem_path = config.caminho_planilha_origem_numero_contratos(ano)
-    origem_path.parent.mkdir(parents=True, exist_ok=True)
     autofiltro = bool(base["regras"].get("aplicar_autofiltro_excel"))
-
-    df_final, df_origem_anterior = _acumular_planilha(origem_path, df_tratado, chave)
-    df_final = _apenas_janela_trimestre(df_final)  # descarta contratos com mais de 90 dias
-    df_final = _ordenar_por_data(df_final)
-    _com_retry_arquivo_bloqueado(origem_path, lambda: df_final.to_excel(origem_path, index=False, sheet_name="sheet1"))
-    if autofiltro:
-        _apply_excel_autofilter(origem_path)
-    _marcar_linhas_novas_e_editadas(origem_path, df_final, chave, df_origem_anterior)
-    linhas_novas = _contar_chaves_novas(df_final, df_origem_anterior, chave)
-
-    logger.info(
-        "Planilha 'Trimestre' atualizada: %s (+%d contratos novos, %d no total, janela de %d dias)",
-        origem_path, linhas_novas, len(df_final), DIAS_JANELA_TRIMESTRE_NUMERO_CONTRATOS,
-    )
-
-    # --- 2. Mescla o download inteiro na planilha anual, reordenada por data crescente ---
-    origem_anual_path = config.caminho_planilha_origem_numero_contratos_anual(ano)
-    df_final_anual, linhas_novas_anual = _acumular_e_colorir_origem(
-        origem_anual_path, df_tratado, chave, autofiltro, ordenar=_ordenar_por_data,
+    origem_path = config.caminho_planilha_origem_numero_contratos_anual(ano)
+    origem_path.parent.mkdir(parents=True, exist_ok=True)
+    df_final, linhas_novas = _acumular_e_colorir_origem(
+        origem_path, df_tratado, chave, autofiltro, ordenar=_ordenar_por_data,
     )
     logger.info(
         "Planilha anual atualizada: %s (+%d contratos novos, %d no total)",
-        origem_anual_path, linhas_novas_anual, len(df_final_anual),
+        origem_path, linhas_novas, len(df_final),
     )
-    _filtrar_mes_atual_e_anterior(origem_anual_path, date_col, is_date=True)
+    _filtrar_mes_atual_e_anterior(origem_path, date_col, is_date=True)
 
-    # --- 3. Acumula na "Prévia" (só o mês/ano de referência), sem duplicar por ID Proposta ---
+    # --- 2. Acumula na "Prévia" (só o mês/ano de referência), sem duplicar por ID Proposta ---
     df_tratado_mes_atual = _apenas_mes_atual(df_tratado)
 
     previa_path = config.caminho_previa_numero_contratos()
@@ -641,8 +607,8 @@ def _process_meta_financiamento_seguro(downloaded_path: Path, base: dict) -> Pat
          mas só o ano corrente é de fato escrito - um ano fechado (ex:
          2025) nunca é tocado de novo (ver `_eh_ano_corrente`).
 
-    Cada ano tem seu próprio arquivo de origem (não subpasta, como em
-    Número de Contratos): "Meta Financiamento Seguro - {ano}.xlsx".
+    Cada ano tem seu próprio arquivo de origem, sem subpasta:
+    "Meta Financiamento Seguro - {ano}.xlsx".
     """
     chave = CHAVE_UNICA_META_FINANCIAMENTO_SEGURO
 
