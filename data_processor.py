@@ -121,6 +121,45 @@ def registrar_historico(
     _com_retry_arquivo_bloqueado(path, lambda: wb.save(path))
 
 
+def ler_historico_desde(inicio: datetime) -> list[dict]:
+    """
+    Relê as linhas de `logs/historico_execucoes.xlsx` gravadas a partir de
+    `inicio` (uma por base processada nesta execução). Usado pela
+    notificação por e-mail (`notifier`) para montar o relatório final sem
+    precisar instrumentar cada `_process_*`. Nunca levanta exceção - se o
+    arquivo não existir ou não puder ser lido, devolve lista vazia.
+    """
+    path = _historico_path()
+    if not path.exists():
+        return []
+    try:
+        wb = load_workbook(path, read_only=True, data_only=True)
+        ws = wb.active
+        linhas: list[dict] = []
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            if not row or not row[0]:
+                continue
+            try:
+                quando = datetime.strptime(str(row[0]), "%d/%m/%Y %H:%M:%S")
+            except ValueError:
+                continue
+            if quando < inicio:
+                continue
+            linhas.append({
+                "quando": quando,
+                "base": row[1] if len(row) > 1 else None,
+                "linhas_baixadas": row[2] if len(row) > 2 else None,
+                "linhas_novas": row[3] if len(row) > 3 else None,
+                "linhas_totais": row[4] if len(row) > 4 else None,
+                "observacao": row[5] if len(row) > 5 else "",
+            })
+        wb.close()
+        return linhas
+    except Exception:
+        logger.warning("Não foi possível reler o histórico para a notificação.", exc_info=True)
+        return []
+
+
 def _chave_como_serie(df: pd.DataFrame, chave) -> pd.Series:
     """Converte a(s) coluna(s) de `chave` numa série de valores comparáveis - uma
     tupla por linha se `chave` for uma lista de colunas, ou a linha inteira

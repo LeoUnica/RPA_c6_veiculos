@@ -278,6 +278,39 @@ ano fechado (ex: 2025) nunca é escrito de novo depois de carregado.
 
 ---
 
+## 📧 Notificação por e-mail
+
+Ao fim de **cada execução** o robô envia **um único e-mail consolidado**
+para `unica.tech@unicapromotora.com.br` (configurável em `SMTP_TO`), no
+mesmo espírito do `historico_execucoes.xlsx`: data/hora de início e fim,
+modo chamado (`--all` / `--base` / `--frequencia`) e, por base, o horário
+de conclusão, o status (sucesso / sem dados / falha / não executada) e a
+contagem de linhas baixadas, novas e totais.
+
+- Se a automação **não chega a iniciar** (config inválida, outra execução
+  em andamento, falha de login no portal C6), o e-mail deixa explícito
+  que a automação **não pôde ser iniciada** e o motivo.
+- Se ela **para no meio de uma base**, a base aparece como **Falha** com o
+  motivo, e as bases seguintes como **Não executada**.
+- O e-mail vai **de** `automacao01@unicapromotora.com.br` **para**
+  `unica.tech@unicapromotora.com.br`, com os **logs em anexo**:
+  `rpa.log` (últimos ~2 MB, se for grande) e `historico_execucoes.xlsx`.
+- O envio (`notifier.py`) tenta **3 canais em ordem**, configurados via `.env`:
+  1. **Microsoft Graph** (não depende de "Authenticated SMTP"):
+     `GRAPH_TENANT_ID` / `GRAPH_CLIENT_ID` / `GRAPH_CLIENT_SECRET` /
+     `GRAPH_SENDER` — App Registration no Azure AD com permissão de
+     aplicação `Mail.Send`.
+  2. **Outlook Desktop** (via COM/`pywin32`) — usa o Outlook já instalado
+     e logado na máquina de automação; **sem SMTP AUTH e sem App
+     Registration**. Ligado por padrão (`MAIL_OUTLOOK=false` desliga).
+  3. **SMTP autenticado** (fallback): `SMTP_HOST` / `SMTP_PORT` /
+     `SMTP_USER` / `SMTP_PASSWORD` / `SMTP_FROM` / `SMTP_STARTTLS`.
+  Destinatário em `MAIL_TO` (ou `SMTP_TO`). Sem nenhum canal funcional, a
+  RPA roda normalmente e só registra no log que a notificação não saiu —
+  a notificação nunca derruba o robô.
+
+---
+
 ## 🔐 Configuração e segurança
 
 - Credenciais e caminhos ficam em variáveis de ambiente, carregadas via `python-dotenv` a partir de um arquivo `.env` — **nunca commitado** (está no `.gitignore`).

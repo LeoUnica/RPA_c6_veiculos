@@ -14,12 +14,14 @@ import logging
 import os
 import time
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 
 import config
 import looker_automation
 import data_processor
 import sharepoint_sync
+import notifier
 
 logging.basicConfig(
     level=logging.INFO,
@@ -105,12 +107,38 @@ def _usa_sharepoint(base: dict) -> bool:
     return not modo.startswith("planilha_origem_local")
 
 
-def run_bases(bases: list[dict], headless: bool = True):
+def _reconciliar_com_historico(relatorio: notifier.RelatorioExecucao) -> None:
+    """
+    Completa cada linha do relatório de e-mail com os números já gravados
+    em `logs/historico_execucoes.xlsx` nesta execução (linhas baixadas/
+    novas/totais e a observação "Sem dados no período"), evitando
+    instrumentar cada `_process_*`.
+    """
+    for linha in data_processor.ler_historico_desde(relatorio.inicio):
+        nome = linha.get("base")
+        alvo = next((r for r in relatorio.resultados if r.nome == nome), None)
+        if alvo is None:
+            continue
+        alvo.linhas_baixadas = linha.get("linhas_baixadas")
+        alvo.linhas_novas = linha.get("linhas_novas")
+        alvo.linhas_totais = linha.get("linhas_totais")
+        obs = (linha.get("observacao") or "").strip()
+        if alvo.status == notifier.STATUS_SUCESSO and obs.lower().startswith("sem dados"):
+            alvo.status = notifier.STATUS_SEM_DADOS
+            alvo.detalhe = obs
+        elif obs and not alvo.detalhe:
+            alvo.detalhe = obs
+
+
+def run_bases(bases: list[dict], relatorio: notifier.RelatorioExecucao, headless: bool = True):
     """
     Executa o pipeline completo para uma ou mais bases. O login no portal
     C6 é feito uma única vez para todas as bases desta chamada (ver
-    looker_automation.download_bases).
+    looker_automation.download_bases). Preenche `relatorio` com o resultado
+    de cada base, para a notificação por e-mail consolidada.
     """
+    relatorio.registrar_bases_previstas([b["nome"] for b in bases])
+
     # 1. Baixa a base original atual do SharePoint (para o merge ficar certo).
     for base in bases:
         if _usa_sharepoint(base):
@@ -122,13 +150,33 @@ def run_bases(bases: list[dict], headless: bool = True):
 
     # 2. Login único no portal C6 e download de todas as bases do Looker
     logger.info("=== Iniciando download no portal C6 (login único para %d base(s)) ===", len(bases))
-    downloaded_paths = looker_automation.download_bases(bases, headless=headless)
+    try:
+        downloaded_paths = looker_automation.download_bases(bases, headless=headless)
+    except Exception as exc:
+        logger.exception("Falha no login/navegação do portal C6 - nenhuma base pôde ser baixada.")
+        for base in bases:
+            r = relatorio.base(base["nome"])
+            r.status = notifier.STATUS_FALHA
+            r.concluida_em = datetime.now()
+            r.detalhe = (
+                "A automação parou antes de baixar as bases: falha de login ou de "
+                f"navegação no portal C6 ({exc}). Ver logs/rpa.log."
+            )
+        raise
 
     # 3. Trata, mescla e sobe cada base que baixou com sucesso
     for base in bases:
+        r = relatorio.base(base["nome"])
         downloaded_path = downloaded_paths.get(base["id"])
         if downloaded_path is None:
             logger.error("Base '%s' pulada: download do Looker falhou (ver erro acima).", base["nome"])
+            r.status = notifier.STATUS_FALHA
+            r.concluida_em = datetime.now()
+            r.detalhe = (
+                "Download do relatório no Looker falhou após as tentativas automáticas "
+                "(falha técnica de navegação/carregamento ou sessão do portal perdida). "
+                "Ver logs/rpa.log."
+            )
             # linhas_baixadas=None (em vez de 0) distingue "falha técnica" de "sem dados no período".
             data_processor.registrar_historico(base["nome"], None, observacao="Falha no download (ver logs/rpa.log)")
             continue
@@ -136,10 +184,17 @@ def run_bases(bases: list[dict], headless: bool = True):
             final_path = data_processor.process_base(downloaded_path, base)
             if _usa_sharepoint(base):
                 sharepoint_sync.upload_processed_base(final_path, base)
+            r.status = notifier.STATUS_SUCESSO
+            r.concluida_em = datetime.now()
             logger.info("=== Base '%s' concluída com sucesso ===", base["nome"])
-        except Exception:
+        except Exception as exc:
             logger.exception("Falha ao processar a base '%s'", base["nome"])
+            r.status = notifier.STATUS_FALHA
+            r.concluida_em = datetime.now()
+            r.detalhe = f"Erro no tratamento/consolidação dos dados: {exc}. Ver logs/rpa.log."
             data_processor.registrar_historico(base["nome"], None, observacao="Falha ao processar (ver logs/rpa.log)")
+
+    _reconciliar_com_historico(relatorio)
 
 
 def main():
@@ -152,10 +207,23 @@ def main():
     parser.add_argument("--debug", action="store_true", help="abre o navegador visível em vez de headless")
     args = parser.parse_args()
 
+    if args.base:
+        modo = f"--base {args.base}"
+    elif args.all:
+        modo = "--all"
+    else:
+        modo = f"--frequencia {args.frequencia}"
+    relatorio = notifier.RelatorioExecucao(modo=modo)
+
     try:
         config.validar_ambiente()
-    except RuntimeError:
+    except RuntimeError as exc:
         logger.exception("Configuração inválida - abortando antes de abrir qualquer navegador.")
+        relatorio.erro_inicializacao = (
+            "Configuração inválida - a automação abortou antes de abrir o navegador. "
+            f"{exc}"
+        )
+        notifier.enviar_relatorio(relatorio)
         raise
 
     if args.base:
@@ -167,10 +235,22 @@ def main():
 
     try:
         with _trava_execucao_unica():
-            run_bases(bases_to_run, headless=not args.debug)
-    except ExecucaoConcorrenteError:
+            run_bases(bases_to_run, relatorio, headless=not args.debug)
+    except ExecucaoConcorrenteError as exc:
         logger.error("Execução abortada: já existe outra em andamento (ver mensagem acima).")
+        relatorio.erro_inicializacao = (
+            "A automação não pôde ser iniciada: já existe outra execução da RPA em "
+            f"andamento nesta máquina. {exc}"
+        )
+        notifier.enviar_relatorio(relatorio)
         raise
+    except Exception:
+        # Falha inesperada no meio da execução (ex: portal C6 fora do ar).
+        # As bases já tiveram seu status registrado em `relatorio`.
+        notifier.enviar_relatorio(relatorio)
+        raise
+    else:
+        notifier.enviar_relatorio(relatorio)
 
 
 if __name__ == "__main__":
