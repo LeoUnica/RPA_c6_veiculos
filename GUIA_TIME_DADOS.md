@@ -377,7 +377,7 @@ planilha de origem oficial é colorida.
   aceita esse diálogo sozinho, não precisa de ação manual.
 - **Retry automático em toda base:** qualquer falha técnica/de navegação,
   em qualquer uma das 5 bases, é tentada de novo automaticamente - até
-  `MAX_TENTATIVAS_POR_BASE` (2) vezes, reabrindo a navegação do zero a
+  `MAX_TENTATIVAS_POR_BASE` (5) vezes, reabrindo a navegação do zero a
   cada tentativa - antes de desistir e marcar a base como pulada e seguir
   para a próxima (ver `looker_automation.download_bases`). Um download que
   funciona mas vem com a planilha vazia **não** entra nesse retry - isso

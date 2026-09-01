@@ -211,7 +211,7 @@ vez de simplesmente não rodar naquele dia/semana/mês sem gerar nenhum erro.
   reaproveita essa sessão para todas as bases de um `--all`/`--frequencia`
   - não é preciso configurar nada extra para isso funcionar. Se uma base
   falhar na navegação, ela tenta de novo automaticamente (reabrindo do
-  zero) até `looker_automation.MAX_TENTATIVAS_POR_BASE` (2) vezes antes de
+  zero) até `looker_automation.MAX_TENTATIVAS_POR_BASE` (5) vezes antes de
   ser considerada pulada, e as demais bases continuam normalmente. A base
   "Dias sem Produção" tem uma falha intermitente conhecida, então esse
   retry é especialmente útil para ela.

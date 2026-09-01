@@ -1096,7 +1096,7 @@ def download_ano_fechado_report(context: BrowserContext, page: Page, base_id: st
     return path
 
 
-MAX_TENTATIVAS_POR_BASE = 2  # toda base tenta pelo menos 2x antes de ser considerada falha/pulada (ver download_bases)
+MAX_TENTATIVAS_POR_BASE = 5  # toda base tenta pelo menos 5x antes de ser considerada falha/pulada (ver download_bases)
 
 
 def download_bases(bases: list[dict], headless: bool = True) -> dict[str, Path]:

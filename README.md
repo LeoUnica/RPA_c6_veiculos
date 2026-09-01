@@ -270,7 +270,7 @@ ano fechado (ex: 2025) nunca é escrito de novo depois de carregado.
 ## 🛡️ Tratamento de erros e resiliência
 
 - **Isolamento entre bases**: uma exceção durante navegação, download ou tratamento de uma base é capturada, logada e a execução segue para a próxima base — nenhuma falha isolada interrompe `--all`/`--frequencia`.
-- **Retry automático em toda base**: qualquer falha técnica/de navegação é tentada de novo automaticamente até `looker_automation.MAX_TENTATIVAS_POR_BASE` (2) vezes por base, antes de ser considerada "pulada". Um download com sucesso mas planilha vazia **não** entra nesse retry — é o comportamento esperado quando não há dados no período.
+- **Retry automático em toda base**: qualquer falha técnica/de navegação é tentada de novo automaticamente até `looker_automation.MAX_TENTATIVAS_POR_BASE` (5) vezes por base, antes de ser considerada "pulada". Um download com sucesso mas planilha vazia **não** entra nesse retry — é o comportamento esperado quando não há dados no período.
 - **Retry em arquivo bloqueado**: se a planilha estiver aberta no Excel ou o OneDrive ainda estiver sincronizando, a gravação tenta de novo automaticamente por até ~2 minutos antes de falhar com uma mensagem clara.
 - **Trava de execução única**: um arquivo de trava (criação atômica, sem condição de corrida) impede duas execuções simultâneas sobre os mesmos arquivos — importante porque a automação roda a partir de uma pasta sincronizada pelo OneDrive.
 - **Perda da sessão principal**: se a aba logada do portal for fechada inesperadamente, a execução para as bases restantes daquela chamada e loga quais foram puladas.
