@@ -151,7 +151,7 @@ def run_bases(bases: list[dict], relatorio: notifier.RelatorioExecucao, headless
     # 2. Login único no portal C6 e download de todas as bases do Looker
     logger.info("=== Iniciando download no portal C6 (login único para %d base(s)) ===", len(bases))
     try:
-        downloaded_paths = looker_automation.download_bases(bases, headless=headless)
+        downloaded_paths = looker_automation.download_bases(bases, headless=headless, relatorio=relatorio)
     except Exception as exc:
         logger.exception("Falha no login/navegação do portal C6 - nenhuma base pôde ser baixada.")
         for base in bases:

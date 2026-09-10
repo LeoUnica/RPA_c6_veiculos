@@ -160,6 +160,10 @@ class RelatorioExecucao:
     resultados: list[ResultadoBase] = field(default_factory=list)
     # Preenchido só quando a automação NÃO chega a rodar as bases.
     erro_inicializacao: str | None = None
+    # Preenchido quando o portal C6 avisa, no login, que a senha vai
+    # expirar em X dias. Aparece no e-mail em TODA execução enquanto o
+    # aviso persistir, até a senha ser trocada.
+    aviso_senha: str | None = None
 
     # -- construção -------------------------------------------------------
     def base(self, nome: str) -> ResultadoBase:
@@ -219,7 +223,8 @@ class RelatorioExecucao:
             situacao = "CONCLUÍDA COM FALHAS"
         else:
             situacao = "CONCLUÍDA COM SUCESSO"
-        return f"[RPA C6 Veículos] {situacao} — {data} ({self.maquina})"
+        sufixo = " — [ATENÇÃO: senha do portal C6 a expirar]" if self.aviso_senha else ""
+        return f"[RPA C6 Veículos] {situacao} — {data} ({self.maquina}){sufixo}"
 
     def render_txt(self) -> str:
         linhas = [
@@ -238,6 +243,15 @@ class RelatorioExecucao:
             linhas += [
                 "MOTIVO DE NÃO TER INICIADO:",
                 self.erro_inicializacao or "",
+                "",
+            ]
+        if self.aviso_senha:
+            linhas += [
+                "AVISO DE SEGURANÇA - EXPIRAÇÃO DE SENHA DO PORTAL C6:",
+                f"  {self.aviso_senha}",
+                "  Troque a senha do usuário da automação no portal C6 e atualize",
+                "  a variável LOOKER_PASSWORD no arquivo .env da máquina de automação",
+                "  antes do prazo, para não interromper as execuções.",
                 "",
             ]
         if self.resultados:
@@ -271,6 +285,18 @@ class RelatorioExecucao:
             <tr><td style="padding:2px 16px 2px 0;color:#57606a;">Duração</td><td style="padding:2px 0;">{_esc(_fmt_duracao(self.inicio, self.fim))}</td></tr>
           </table>
         """
+
+        bloco_aviso_senha = ""
+        if self.aviso_senha:
+            bloco_aviso_senha = f"""
+              <div style="margin:18px 0;padding:12px 14px;background:#fff8c5;border:1px solid #eac54f;border-radius:6px;font:14px/1.5 -apple-system,Segoe UI,Roboto,Arial,sans-serif;color:#1f2328;">
+                <strong style="color:#9a6700;">Aviso de segurança — expiração de senha do portal C6</strong><br>
+                {_esc(self.aviso_senha)}<br>
+                <span style="color:#57606a;">Troque a senha do usuário da automação no portal C6 e atualize a
+                variável <code>LOOKER_PASSWORD</code> no <code>.env</code> da máquina de automação antes do
+                prazo, para não interromper as execuções.</span>
+              </div>
+            """
 
         bloco_erro = ""
         if self.nao_iniciou:
@@ -330,6 +356,7 @@ class RelatorioExecucao:
     <p style="margin:18px 0 0;font:600 15px/1.5 -apple-system,Segoe UI,Roboto,Arial,sans-serif;color:{cor_veredito};">
       {_esc(self.veredito)}
     </p>
+    {bloco_aviso_senha}
     {bloco_erro}
     {bloco_tabela}
     <p style="margin:24px 0 0;font:12px/1.5 -apple-system,Segoe UI,Roboto,Arial,sans-serif;color:#8b949e;">

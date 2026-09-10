@@ -150,7 +150,31 @@ def _confirmar_dados_cadastrais_se_necessario(page: Page):
     page.wait_for_load_state("networkidle")
 
 
-def login(page: Page):
+def _extrair_aviso_troca_senha(texto: str | None) -> str | None:
+    """
+    Procura, num texto (mensagem de dialog JS ou corpo da página logo após
+    o login no portal C6), o aviso de que a senha do usuário vai expirar em
+    X dias - ex: "Sua senha expira em 7 dias", "Você deve trocar sua senha
+    em 3 dias". Retorna a frase encontrada (normalizada), ou None.
+
+    Casa uma linha que fale de "senha", cite um número de dias e traga um
+    verbo de expiração/troca - largo o bastante para aguentar variações de
+    texto do portal sem depender de uma frase exata.
+    """
+    if not texto:
+        return None
+    for trecho in re.split(r"[\r\n]+", texto):
+        t = " ".join(trecho.split())
+        if not t or "senha" not in t.lower():
+            continue
+        tem_dias = re.search(r"\b\d+\s*dias?\b", t, re.IGNORECASE)
+        tem_verbo = re.search(r"expir|troc|alter|redefin|venc|renov|prazo", t, re.IGNORECASE)
+        if tem_dias and tem_verbo:
+            return t[:300]
+    return None
+
+
+def login(page: Page) -> str | None:
     """
     Login no portal C6 Consig (WebAutorizador - página ASP.NET clássica,
     sem <label>):
@@ -164,7 +188,13 @@ def login(page: Page):
     automaticamente para forçar a nova sessão. Também pode exigir
     confirmar os dados cadastrais (ver `_confirmar_dados_cadastrais_se_necessario`).
     """
-    page.on("dialog", lambda dialog: dialog.accept())
+    mensagens_dialog: list[str] = []
+
+    def _tratar_dialog(dialog):
+        mensagens_dialog.append(dialog.message or "")
+        dialog.accept()
+
+    page.on("dialog", _tratar_dialog)
 
     page.goto(config.LOOKER_URL)
     page.locator("#EUsuario_CAMPO").fill(config.LOOKER_USER)
@@ -172,6 +202,19 @@ def login(page: Page):
     page.locator("#lnkEntrar").click()
     page.wait_for_load_state("networkidle")
     _confirmar_dados_cadastrais_se_necessario(page)
+
+    # Aviso de expiração de senha do portal C6 (pode vir como dialog JS ou
+    # como texto na própria tela pós-login) - reportado na notificação por
+    # e-mail em toda execução enquanto persistir.
+    aviso = next((a for m in mensagens_dialog if (a := _extrair_aviso_troca_senha(m))), None)
+    if not aviso:
+        try:
+            aviso = _extrair_aviso_troca_senha(page.locator("body").inner_text(timeout=5000))
+        except Exception:
+            logger.debug("Não foi possível ler o corpo da página para checar aviso de senha.", exc_info=True)
+    if aviso:
+        logger.warning("Portal C6 avisou sobre expiração de senha: %s", aviso)
+    return aviso
 
 
 # --------------------------------------------------------------------------
@@ -1099,7 +1142,7 @@ def download_ano_fechado_report(context: BrowserContext, page: Page, base_id: st
 MAX_TENTATIVAS_POR_BASE = 5  # toda base tenta pelo menos 5x antes de ser considerada falha/pulada (ver download_bases)
 
 
-def download_bases(bases: list[dict], headless: bool = True) -> dict[str, Path]:
+def download_bases(bases: list[dict], headless: bool = True, relatorio=None) -> dict[str, Path]:
     """
     Executa o fluxo completo de download para uma ou mais bases fazendo um
     único login no portal - cada fluxo de download parte da mesma página
@@ -1128,7 +1171,9 @@ def download_bases(bases: list[dict], headless: bool = True) -> dict[str, Path]:
         page = context.new_page()
 
         try:
-            login(page)
+            aviso_senha = login(page)
+            if aviso_senha and relatorio is not None:
+                relatorio.aviso_senha = aviso_senha
             for base in bases:
                 if page.is_closed():
                     # A aba principal (WebAutorizador logado) foi fechada de forma
